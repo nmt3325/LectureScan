@@ -39,6 +39,10 @@ targets:
     platform: iOS
     sources:
       - path: LectureScanTests
+        excludes:
+          - Fixtures
+      - path: LectureScanTests/Fixtures
+        buildPhase: resources
     dependencies:
       - target: LectureScan
     settings:

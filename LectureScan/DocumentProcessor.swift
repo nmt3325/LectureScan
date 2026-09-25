@@ -30,45 +30,100 @@ final class DocumentProcessor {
         .cacheIntermediates: false,
         .useSoftwareRenderer: false
     ])
+    private let resolver = RectangleResolver(policy: .productionSeed)
 
-    func detectQuadrilateral(
+    func detectCandidates(
         in image: CIImage,
+        requestSet: RectangleRequestSet,
         maximumDimension: CGFloat? = nil
-    ) throws -> DetectedQuadrilateral? {
+    ) throws -> RectangleCandidateBatch {
         let source = normalized(image)
-        guard !source.extent.isEmpty else { return nil }
-
-        let request = VNDetectRectanglesRequest()
-        request.maximumObservations = 6
-        request.minimumConfidence = 0.55
-        request.minimumSize = 0.16
-        request.minimumAspectRatio = 0.22
-        request.maximumAspectRatio = 1.0
-        request.quadratureTolerance = 35
+        guard !source.extent.isEmpty else {
+            return RectangleCandidateBatch(
+                sourceSize: .zero,
+                detectionSize: .zero,
+                document: nil,
+                rectangles: []
+            )
+        }
 
         let detectionImage = imageForDetection(
             source,
             maximumDimension: maximumDimension
         )
-        let handler = VNImageRequestHandler(ciImage: detectionImage, orientation: .up, options: [:])
-        try handler.perform([request])
+        let documentRequest: VNDetectDocumentSegmentationRequest? = {
+            guard requestSet == .document || requestSet == .dual else { return nil }
+            let request = VNDetectDocumentSegmentationRequest()
+            request.revision = VNDetectDocumentSegmentationRequestRevision1
+            return request
+        }()
+        let rectangleRequest: VNDetectRectanglesRequest? = {
+            guard requestSet == .rectangle || requestSet == .dual else { return nil }
+            let request = VNDetectRectanglesRequest()
+            request.maximumObservations = 6
+            request.minimumConfidence = 0.55
+            request.minimumSize = 0.16
+            request.minimumAspectRatio = 0.22
+            request.maximumAspectRatio = 1.0
+            request.quadratureTolerance = 35
+            return request
+        }()
 
-        guard let observation = request.results?.max(by: { score($0) < score($1) }) else {
-            return nil
-        }
-
-        return DetectedQuadrilateral(
-            topLeft: observation.topLeft,
-            topRight: observation.topRight,
-            bottomLeft: observation.bottomLeft,
-            bottomRight: observation.bottomRight,
-            sourceSize: source.extent.size
+        var requests: [VNRequest] = []
+        if let documentRequest { requests.append(documentRequest) }
+        if let rectangleRequest { requests.append(rectangleRequest) }
+        let handler = VNImageRequestHandler(
+            ciImage: detectionImage,
+            orientation: .up,
+            options: [:]
         )
+        try handler.perform(requests)
+
+        let sourceSize = source.extent.size
+        let document = documentRequest?.results?.first.map {
+            candidate(
+                from: $0,
+                detector: .documentSegmentation,
+                originalIndex: 0,
+                sourceSize: sourceSize
+            )
+        }
+        let rectangles = (rectangleRequest?.results ?? []).enumerated().map {
+            candidate(
+                from: $0.element,
+                detector: .rectangle,
+                originalIndex: $0.offset,
+                sourceSize: sourceSize
+            )
+        }
+        return RectangleCandidateBatch(
+            sourceSize: sourceSize,
+            detectionSize: detectionImage.extent.size,
+            document: document,
+            rectangles: rectangles
+        )
+    }
+
+    func detectQuadrilateral(
+        in image: CIImage,
+        maximumDimension: CGFloat? = nil,
+        prior: RectanglePrior? = nil,
+        requestSet: RectangleRequestSet = .dual,
+        mode: RectangleResolutionMode = .still
+    ) throws -> DetectedQuadrilateral? {
+        let batch = try detectCandidates(
+            in: image,
+            requestSet: requestSet,
+            maximumDimension: maximumDimension
+        )
+        return resolver.resolve(batch, prior: prior, mode: mode)
+            .selection?.candidate.quadrilateral
     }
 
     func process(
         _ image: CIImage,
         preferredRectangle: DetectedQuadrilateral? = nil,
+        detectionPrior: RectanglePrior? = nil,
         detectIfNeeded: Bool = true
     ) throws -> ProcessedDocument {
         let source = normalized(image)
@@ -78,18 +133,42 @@ final class DocumentProcessor {
         if let preferredRectangle {
             rectangle = preferredRectangle.withSourceSize(source.extent.size)
         } else if detectIfNeeded {
-            rectangle = try detectQuadrilateral(in: source)
+            rectangle = try detectQuadrilateral(
+                in: source,
+                prior: detectionPrior,
+                requestSet: .dual,
+                mode: .still
+            )
         } else {
             rectangle = nil
         }
 
         let cropped = rectangle.map { perspectiveCorrect(source, to: $0) } ?? source
         let enhanced = enhance(cropped)
-
         return ProcessedDocument(
             image: try render(enhanced),
             sourceImage: try render(source),
             quadrilateral: rectangle
+        )
+    }
+
+    private func candidate(
+        from observation: VNRectangleObservation,
+        detector: RectangleDetectorKind,
+        originalIndex: Int,
+        sourceSize: CGSize
+    ) -> RectangleCandidate {
+        RectangleCandidate(
+            quadrilateral: DetectedQuadrilateral(
+                topLeft: observation.topLeft,
+                topRight: observation.topRight,
+                bottomLeft: observation.bottomLeft,
+                bottomRight: observation.bottomRight,
+                sourceSize: sourceSize
+            ),
+            detector: detector,
+            confidence: CGFloat(observation.confidence),
+            originalIndex: originalIndex
         )
     }
 
@@ -110,11 +189,8 @@ final class DocumentProcessor {
         guard let maximumDimension, maximumDimension > 0 else { return image }
         let longestDimension = max(image.extent.width, image.extent.height)
         guard longestDimension > maximumDimension else { return image }
-
         let scale = maximumDimension / longestDimension
-        return image.transformed(
-            by: CGAffineTransform(scaleX: scale, y: scale)
-        )
+        return image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
     }
 
     private func perspectiveCorrect(
@@ -159,10 +235,5 @@ final class DocumentProcessor {
             x: extent.minX + normalizedPoint.x * extent.width,
             y: extent.minY + normalizedPoint.y * extent.height
         )
-    }
-
-    private func score(_ observation: VNRectangleObservation) -> CGFloat {
-        let area = observation.boundingBox.width * observation.boundingBox.height
-        return area * CGFloat(observation.confidence)
     }
 }

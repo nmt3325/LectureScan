@@ -29,14 +29,25 @@ final class CameraModel: NSObject, ObservableObject {
     private let photoOutput = AVCapturePhotoOutput()
     private let processor = DocumentProcessor()
 
+    private struct LatestVideoFrameSnapshot {
+        let pixelBuffer: CVPixelBuffer
+        let metadata: RectangleFrameMetadata
+    }
+
+    private struct SharedCaptureState {
+        var latestFrame: LatestVideoFrameSnapshot?
+        var trustedPrior: TrustedRectangleSnapshot?
+        var geometryGeneration: UInt64 = 0
+        var hardwareZoomFactor: CGFloat = 1
+    }
+
     private var videoDevice: AVCaptureDevice?
-    private var latestPixelBuffer: CVPixelBuffer?
+    private var sharedCaptureState = SharedCaptureState()
+    private var frameSequence: UInt64 = 0
+    private var liveTracker = GenerationScopedLiveRectangleTracker()
     private var isConfigured = false
-    private var lastDetectionTime: CFTimeInterval = 0
-    private var consecutiveDetectionMisses = 0
-    private var smoothedQuadrilateral: DetectedQuadrilateral?
-    private let detectionInterval: CFTimeInterval = 0.08
     private let maximumPreviewDetectionDimension: CGFloat = 1_280
+    private let captureRotationAngle: CGFloat = 90
 
     func start() {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
@@ -73,6 +84,7 @@ final class CameraModel: NSObject, ObservableObject {
         sessionQueue.async { [weak self] in
             guard let self, self.session.isRunning else { return }
             self.session.stopRunning()
+            self.invalidateDetectionGeometry(hardwareZoomFactor: nil)
             self.publish {
                 self.isReady = false
                 self.isTorchOn = false
@@ -216,9 +228,18 @@ final class CameraModel: NSObject, ObservableObject {
                 try device.lockForConfiguration()
                 defer { device.unlockForConfiguration() }
 
+                let previousHardwareFactor = device.videoZoomFactor
                 device.videoZoomFactor = targetHardwareFactor
+                let appliedHardwareFactor = device.videoZoomFactor
                 let appliedDisplayFactor = range.clamped(
-                    device.videoZoomFactor * displayMultiplier
+                    appliedHardwareFactor * displayMultiplier
+                )
+                let zoomChanged = abs(log(
+                    appliedHardwareFactor / max(previousHardwareFactor, 0.01)
+                )) > 0.01
+                self.updateDetectionGeometry(
+                    hardwareZoomFactor: appliedHardwareFactor,
+                    invalidatesDetection: zoomChanged
                 )
 
                 self.publish {
@@ -303,6 +324,10 @@ final class CameraModel: NSObject, ObservableObject {
             throw CameraConfigurationError.noCamera
         }
         videoDevice = device
+        updateDetectionGeometry(
+            hardwareZoomFactor: device.videoZoomFactor,
+            invalidatesDetection: true
+        )
 
         let initialZoomRange = availableZoomRange(for: device)
         let initialZoomFactor = initialZoomRange.clamped(
@@ -386,23 +411,39 @@ final class CameraModel: NSObject, ObservableObject {
 
     private func captureLatestVideoFrame() {
         frameLock.lock()
-        let pixelBuffer = latestPixelBuffer
+        let frame = sharedCaptureState.latestFrame
+        let trustedPrior = sharedCaptureState.trustedPrior
+        let geometryGeneration = sharedCaptureState.geometryGeneration
         frameLock.unlock()
 
-        guard let pixelBuffer else {
-            fail("カメラ映像の準備ができていません。")
+        guard let frame, frame.metadata.geometryGeneration == geometryGeneration else {
+            fail("カメラ映像の更新を待っています。")
             return
         }
 
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        process(image, method: .videoFrame)
+        let prior = RectangleCapturePriorEligibility.prior(
+            from: trustedPrior,
+            for: frame.metadata
+        )
+        process(
+            CIImage(cvPixelBuffer: frame.pixelBuffer),
+            method: .videoFrame,
+            detectionPrior: prior
+        )
     }
 
-    private func process(_ image: CIImage, method: SilentCaptureMethod) {
+    private func process(
+        _ image: CIImage,
+        method: SilentCaptureMethod,
+        detectionPrior: RectanglePrior? = nil
+    ) {
         processingQueue.async { [weak self] in
             guard let self else { return }
             do {
-                let result = try self.processor.process(image)
+                let result = try self.processor.process(
+                    image,
+                    detectionPrior: detectionPrior
+                )
                 guard let jpegData = result.image.jpegData(compressionQuality: 0.96) else {
                     throw DocumentProcessorError.renderingFailed
                 }
@@ -600,10 +641,32 @@ final class CameraModel: NSObject, ObservableObject {
         }
     }
 
-    private func registerDetectionMiss() {
-        consecutiveDetectionMisses += 1
-        guard consecutiveDetectionMisses >= 4 else { return }
-        smoothedQuadrilateral = nil
+    private func updateDetectionGeometry(
+        hardwareZoomFactor: CGFloat,
+        invalidatesDetection: Bool
+    ) {
+        frameLock.lock()
+        sharedCaptureState.hardwareZoomFactor = hardwareZoomFactor
+        if invalidatesDetection {
+            sharedCaptureState.geometryGeneration &+= 1
+            sharedCaptureState.trustedPrior = nil
+        }
+        frameLock.unlock()
+
+        if invalidatesDetection {
+            publish { self.detectedQuadrilateral = nil }
+        }
+    }
+
+    private func invalidateDetectionGeometry(hardwareZoomFactor: CGFloat?) {
+        frameLock.lock()
+        if let hardwareZoomFactor {
+            sharedCaptureState.hardwareZoomFactor = hardwareZoomFactor
+        }
+        sharedCaptureState.geometryGeneration &+= 1
+        sharedCaptureState.trustedPrior = nil
+        frameLock.unlock()
+
         publish { self.detectedQuadrilateral = nil }
     }
 
@@ -624,33 +687,80 @@ extension CameraModel: AVCaptureVideoDataOutputSampleBufferDelegate {
     ) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
+        let now = CACurrentMediaTime()
+        frameSequence &+= 1
+        let sourceSize = CGSize(
+            width: CVPixelBufferGetWidth(pixelBuffer),
+            height: CVPixelBufferGetHeight(pixelBuffer)
+        )
+
         frameLock.lock()
-        latestPixelBuffer = pixelBuffer
+        let metadata = RectangleFrameMetadata(
+            sequence: frameSequence,
+            timestamp: now,
+            sourceSize: sourceSize,
+            geometryGeneration: sharedCaptureState.geometryGeneration,
+            hardwareZoomFactor: sharedCaptureState.hardwareZoomFactor,
+            rotationAngle: captureRotationAngle
+        )
+        sharedCaptureState.latestFrame = LatestVideoFrameSnapshot(
+            pixelBuffer: pixelBuffer,
+            metadata: metadata
+        )
+        let didResetForGeometry = liveTracker.synchronize(
+            generation: metadata.geometryGeneration,
+            at: now
+        )
+        let requestSet = liveTracker.nextRequest(at: now)
+        if didResetForGeometry {
+            // Queue this while the generation lock is held so a later zoom
+            // invalidation cannot be followed by an older overlay publication.
+            publish { self.detectedQuadrilateral = nil }
+        }
         frameLock.unlock()
 
-        let now = CACurrentMediaTime()
-        guard now - lastDetectionTime >= detectionInterval else { return }
-        lastDetectionTime = now
-
+        guard let requestSet else { return }
+        let batch: RectangleCandidateBatch
         do {
-            let detected = try processor.detectQuadrilateral(
+            batch = try processor.detectCandidates(
                 in: CIImage(cvPixelBuffer: pixelBuffer),
+                requestSet: requestSet,
                 maximumDimension: maximumPreviewDetectionDimension
             )
-            if let detected {
-                consecutiveDetectionMisses = 0
-                let stabilized = smoothedQuadrilateral?.interpolated(
-                    toward: detected,
-                    amount: 0.58
-                ) ?? detected
-                smoothedQuadrilateral = stabilized
-                publish { self.detectedQuadrilateral = stabilized }
-            } else {
-                registerDetectionMiss()
-            }
         } catch {
-            registerDetectionMiss()
+            batch = RectangleCandidateBatch(
+                sourceSize: sourceSize,
+                detectionSize: sourceSize,
+                document: nil,
+                rectangles: []
+            )
         }
+
+        let finishedAt = CACurrentMediaTime()
+        frameLock.lock()
+        guard sharedCaptureState.geometryGeneration == metadata.geometryGeneration,
+              let update = liveTracker.complete(
+                batch,
+                requestGeneration: metadata.geometryGeneration,
+                at: finishedAt
+              ) else {
+            frameLock.unlock()
+            return
+        }
+        if let rawCandidate = update.rawTrustedCandidate {
+            sharedCaptureState.trustedPrior = TrustedRectangleSnapshot(
+                rawCandidate: rawCandidate,
+                frame: metadata
+            )
+        } else if update.displayedQuadrilateral == nil {
+            sharedCaptureState.trustedPrior = nil
+        }
+        // Enqueue the overlay before releasing the generation lock. If zoom or
+        // stop invalidates geometry next, its nil publication is ordered later.
+        publish {
+            self.detectedQuadrilateral = update.displayedQuadrilateral
+        }
+        frameLock.unlock()
     }
 }
 

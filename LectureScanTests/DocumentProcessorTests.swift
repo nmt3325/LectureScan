@@ -20,6 +20,18 @@ final class DocumentProcessorTests: XCTestCase {
         XCTAssertEqual(result.image.size.height, 240, accuracy: 1)
     }
 
+    func testAutomaticAbstentionKeepsWholeImage() throws {
+        let source = CIImage(color: CIColor(red: 0.2, green: 0.4, blue: 0.8))
+            .cropped(to: CGRect(x: 0, y: 0, width: 320, height: 240))
+
+        let result = try processor.process(source)
+
+        XCTAssertFalse(result.rectangleFound)
+        XCTAssertNil(result.quadrilateral)
+        XCTAssertEqual(result.image.size.width, 320, accuracy: 1)
+        XCTAssertEqual(result.image.size.height, 240, accuracy: 1)
+    }
+
     func testPerspectiveCorrectionWithKnownQuadrilateral() throws {
         let source = CIImage(color: CIColor(red: 0.95, green: 0.95, blue: 0.95))
             .cropped(to: CGRect(x: 0, y: 0, width: 800, height: 600))
