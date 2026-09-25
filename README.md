@@ -7,7 +7,7 @@
 - **無音撮影**
   - iOS 18 以降で端末・地域が対応している場合は、Apple の公開 API `isShutterSoundSuppressionEnabled` を使った高画質撮影。
   - シャッター音抑制を利用できない端末・地域では、`AVCaptureVideoDataOutput` の最新フレームを取得する方式へ自動切り替え。静止画シャッターを呼ばず、アプリ側でも撮影音を再生しません。
-- **高頻度リアルタイム矩形検知** — Vision の `VNDetectRectanglesRequest` を軽量化した入力へ約 12.5 fps を上限に実行し、プレビューと同じアスペクトフィル座標で黄色い枠を表示。
+- **安全なハイブリッド矩形検知** — Vision の Document Segmentation と複数のRectangle候補を、幾何検証・検出器間consensus・時間方向priorで選別。曖昧な場合は誤った自動cropを行わず元画像を保存し、状態に応じて単一検出とdual probeを切り替えます。
 - **自動切り抜き・任意の後編集** — Core Image の `CIPerspectiveCorrection` で自動補正。撮影直後はカメラを継続し、必要なときだけ左下の撮影ライブラリから画像を選び、「編集」で四隅を修正できます。ポイントのドラッグ中は周囲を 3 倍に拡大する円形ルーペを表示します。
 - **撮影ライブラリ** — 元画像・補正済み画像・切り抜き情報・サムネイルをアプリ内へ永続保存し、一覧表示、詳細表示、再コピー、後編集に対応します。
 - **写真ライブラリ保存・自動コピー** — 撮影時に補正済み JPEG を写真ライブラリへ自動保存し、同時に `UIPasteboard` へコピー。編集は必須ではなく、手動修正版も新しい写真として保存・コピーします。
@@ -81,16 +81,29 @@ livecontainer://install?url=https%3A%2F%2Fgithub.com%2Fnmt3325%2FLectureScan%2Fr
 
 > 未署名 IPA を通常の iPhone アプリとして直接インストールする場合は、利用する端末と Apple ID に対応した証明書・プロビジョニングプロファイルで再署名してください。LiveContainer へ読み込む場合は、LiveContainer 側の導入・署名要件に従ってください。
 
+## 開発書記（必須）
+
+このリポジトリで人が変更コミットを作成する場合は、**同じコミットに対応する開発書記を必ず含めてください**。書記のない変更は完了扱いにしません。
+
+- 保存先・履歴索引: [`docs/development-journal/`](docs/development-journal/README.md)
+- 新規作成用: [`docs/development-journal/TEMPLATE.md`](docs/development-journal/TEMPLATE.md)
+- 必須内容: 実施内容、改善点、問題、原因、対処、検証、結果、残る問題・制約
+
+実装と書記を別コミットに分けず、検証できた事実と未確認事項を区別して記録してください。Simulatorや合成fixtureの結果を実機結果として記載しないでください。
+
 ## 構成
 
 - `CameraModel.swift` — AVFoundation セッション、無音方式の選択、撮影、クリップボード
 - `CameraPreview.swift` — プレビュー、矩形オーバーレイ、タップフォーカス
-- `DocumentProcessor.swift` — Vision 検知、台形補正、画質調整
+- `DocumentProcessor.swift` — hybrid Vision候補生成、台形補正、画質調整
+- `RectangleDetection.swift` — 候補の幾何検証、IoU、consensus、安全な選択
+- `LiveRectangleTracker.swift` — live検出の状態機械、平滑化、世代管理
 - `CameraScreen.swift` — SwiftUI カメラ UI と左下のライブラリ導線
 - `CaptureLibraryStore.swift` — 元画像・補正画像・メタデータ・サムネイルの永続保存
 - `CaptureLibraryScreen.swift` — 撮影一覧、詳細、コピー、後編集 UI
 - `CropEditorScreen.swift` — 四隅をドラッグできる切り抜き修正 UI と円形拡大ルーペ
-- `LectureScanTests/` — Core Image 補正処理のテスト
+- `LectureScanTests/` — 補正、保存、矩形選択、live trackerの回帰テスト
+- `docs/development-journal/` — コミット単位の開発書記
 
 ## プライバシー
 
