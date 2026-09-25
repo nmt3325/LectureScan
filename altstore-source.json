@@ -1,0 +1,50 @@
+{
+  "name": "LectureScan",
+  "identifier": "dev.nmt3325.LectureScan.source",
+  "subtitle": "LectureScan automated unsigned builds",
+  "description": "AltStore・SideStore・LiveContainer 互換の公式ビルドソースです。",
+  "website": "https://github.com/nmt3325/LectureScan",
+  "iconURL": "https://raw.githubusercontent.com/nmt3325/LectureScan/main/LectureScan/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+  "tintColor": "#FFD60A",
+  "featuredApps": [
+    "dev.nmt3325.LectureScan"
+  ],
+  "apps": [
+    {
+      "beta": true,
+      "name": "LectureScan",
+      "bundleIdentifier": "dev.nmt3325.LectureScan",
+      "developerName": "沼田 開智",
+      "subtitle": "授業向け無音ドキュメントカメラ",
+      "version": "1.0.0",
+      "versionDate": "2026-09-25",
+      "versionDescription": "main の af5acc6 から自動生成した未署名 IPA",
+      "downloadURL": "https://github.com/nmt3325/LectureScan/releases/download/nightly/LectureScan-unsigned-8-36157251387.ipa",
+      "localizedDescription": "授業中の書類・黒板・スクリーンを無音で撮影し、矩形補正した画像を写真ライブラリへ保存してクリップボードへ自動コピーします。",
+      "iconURL": "https://raw.githubusercontent.com/nmt3325/LectureScan/main/LectureScan/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+      "tintColor": "#FFD60A",
+      "category": "utilities",
+      "size": 623254,
+      "minOSVersion": "17.0",
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {
+          "NSCameraUsageDescription": "書類・黒板・スクリーンの撮影と矩形補正に使用します。",
+          "NSPhotoLibraryAddUsageDescription": "補正済み画像を写真ライブラリへ保存します。"
+        }
+      },
+      "versions": [
+        {
+          "version": "1.0.0",
+          "buildNumber": "8",
+          "date": "2026-09-25T15:54:15Z",
+          "localizedDescription": "main の af5acc6 から自動生成した未署名 IPA",
+          "downloadURL": "https://github.com/nmt3325/LectureScan/releases/download/nightly/LectureScan-unsigned-8-36157251387.ipa",
+          "size": 623254,
+          "minOSVersion": "17.0"
+        }
+      ]
+    }
+  ],
+  "news": []
+}
