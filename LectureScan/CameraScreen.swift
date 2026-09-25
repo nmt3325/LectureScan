@@ -3,7 +3,13 @@ import UIKit
 
 struct CameraScreen: View {
     @ObservedObject var camera: CameraModel
-    @State private var cropEditorCapture: EditableCapture?
+    @ObservedObject private var library: CaptureLibraryStore
+    @State private var isLibraryPresented = false
+
+    init(camera: CameraModel) {
+        self.camera = camera
+        _library = ObservedObject(wrappedValue: camera.library)
+    }
 
     var body: some View {
         ZStack {
@@ -24,13 +30,10 @@ struct CameraScreen: View {
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
         .onAppear { camera.start() }
-        .onChange(of: camera.editableCapture?.id) { previousID, newID in
-            guard let newID, newID != previousID,
-                  let capture = camera.editableCapture else { return }
-            cropEditorCapture = capture
-        }
-        .fullScreenCover(item: $cropEditorCapture) { capture in
-            CropEditorScreen(camera: camera, capture: capture)
+        .fullScreenCover(isPresented: $isLibraryPresented, onDismiss: {
+            camera.start()
+        }) {
+            CaptureLibraryScreen(camera: camera)
         }
     }
 
@@ -70,7 +73,7 @@ struct CameraScreen: View {
 
                 zoomControls
 
-                Text("倍率を操作してズーム。撮影後は四隅をドラッグして切り抜きを修正できます")
+                Text("撮影すると自動で保存・コピー。編集は左下のライブラリから行えます")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.white.opacity(0.88))
                     .multilineTextAlignment(.center)
@@ -136,49 +139,51 @@ struct CameraScreen: View {
     private var captureControls: some View {
         ZStack {
             HStack {
-                if let image = camera.lastImage {
-                    Button {
-                        cropEditorCapture = camera.editableCapture
-                    } label: {
-                        ZStack(alignment: .bottomTrailing) {
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 62, height: 62)
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .stroke(.white.opacity(0.8), lineWidth: 1)
-                                }
+                Button(action: openLibrary) {
+                    ZStack(alignment: .bottomTrailing) {
+                        Group {
+                            if let image = library.items.first?.thumbnail {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(.ultraThinMaterial)
+                                    .overlay {
+                                        Image(systemName: "photo.on.rectangle.angled")
+                                            .font(.title2)
+                                            .foregroundStyle(.white.opacity(0.86))
+                                    }
+                            }
+                        }
+                        .frame(width: 62, height: 62)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(.white.opacity(0.8), lineWidth: 1)
+                        }
 
-                            Image(systemName: "crop.rotate")
-                                .font(.caption2.bold())
-                                .foregroundStyle(.black)
-                                .padding(5)
-                                .background(.yellow, in: Circle())
-                                .offset(x: 4, y: 4)
-                        }
+                        Image(systemName: "photo.stack.fill")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.black)
+                            .padding(5)
+                            .background(.yellow, in: Circle())
+                            .offset(x: 4, y: 4)
                     }
-                    .accessibilityLabel("最後の画像の切り抜きを修正")
-                    .contextMenu {
-                        Button(action: camera.copyLastImage) {
-                            Label("もう一度コピー", systemImage: "doc.on.clipboard")
-                        }
-                    }
-                } else {
-                    Color.clear.frame(width: 62, height: 62)
                 }
+                .accessibilityLabel("撮影ライブラリを開く")
+                .accessibilityValue("\(library.items.count)枚")
 
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 3) {
-                    Image(systemName: "photo.fill")
+                    Image(systemName: "doc.on.clipboard.fill")
                         .font(.title3)
-                    Text("保存＆コピー")
+                    Text("自動保存・コピー")
                         .font(.caption2.weight(.semibold))
                 }
                 .foregroundStyle(.white.opacity(0.78))
-                .frame(width: 62)
+                .frame(width: 72)
             }
 
             Button(action: camera.capture) {
@@ -198,9 +203,14 @@ struct CameraScreen: View {
             }
             .disabled(!camera.isReady || camera.isCapturing)
             .opacity(camera.isReady ? 1 : 0.45)
-            .accessibilityLabel("撮影して写真へ保存し、切り抜きを確認")
+            .accessibilityLabel("撮影して自動保存し、クリップボードへコピー")
         }
         .frame(height: 90)
+    }
+
+    private func openLibrary() {
+        camera.stop()
+        isLibraryPresented = true
     }
 
     private var loadingView: some View {
@@ -418,9 +428,14 @@ private struct ZoomControl: View {
 
                 let currentAngle = touchAngle(value.location, center: center)
                 let angleDelta = normalizedAngle(currentAngle - startAngle)
-                let octaves = angleDelta / radiansPerDoubling
-                let multiplier = CGFloat(pow(2, Double(octaves)))
-                onChange(range.clamped(startFactor * multiplier))
+                onChange(
+                    ZoomDialMath.factor(
+                        from: startFactor,
+                        angleDelta: angleDelta,
+                        radiansPerDoubling: radiansPerDoubling,
+                        range: range
+                    )
+                )
             }
             .onEnded { _ in
                 dragStartAngle = nil

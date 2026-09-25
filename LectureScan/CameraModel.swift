@@ -7,11 +7,10 @@ import UniformTypeIdentifiers
 
 final class CameraModel: NSObject, ObservableObject {
     let session = AVCaptureSession()
+    let library = CaptureLibraryStore()
 
     @Published private(set) var authorizationState: CameraAuthorizationState = .checking
     @Published private(set) var detectedQuadrilateral: DetectedQuadrilateral?
-    @Published private(set) var lastImage: UIImage?
-    @Published private(set) var editableCapture: EditableCapture?
     @Published private(set) var notice: CaptureNotice?
     @Published private(set) var isReady = false
     @Published private(set) var isCapturing = false
@@ -104,8 +103,7 @@ final class CameraModel: NSObject, ObservableObject {
         }
     }
 
-    func copyLastImage() {
-        guard let image = lastImage else { return }
+    func copyImage(_ image: UIImage) {
         processingQueue.async { [weak self] in
             guard let self, let data = image.jpegData(compressionQuality: 0.96) else { return }
             self.publish {
@@ -113,7 +111,7 @@ final class CameraModel: NSObject, ObservableObject {
                 self.showNotice(
                     CaptureNotice(
                         kind: .success,
-                        title: "もう一度コピーしました",
+                        title: "画像をコピーしました",
                         detail: "JPEG をクリップボードに保存しました"
                     )
                 )
@@ -124,9 +122,10 @@ final class CameraModel: NSObject, ObservableObject {
 
     func applyManualCrop(
         _ quadrilateral: DetectedQuadrilateral,
+        to capture: EditableCapture,
         completion: @escaping (Bool) -> Void
     ) {
-        guard let capture = editableCapture, !isApplyingCrop else {
+        guard !isApplyingCrop else {
             completion(false)
             return
         }
@@ -151,13 +150,14 @@ final class CameraModel: NSObject, ObservableObject {
                     throw DocumentProcessorError.renderingFailed
                 }
 
+                let updatedCapture = capture.selecting(selectedQuadrilateral)
+                try self.library.save(capture: updatedCapture, processedImage: result.image)
+
                 self.publish {
                     UIPasteboard.general.setData(
                         jpegData,
                         forPasteboardType: UTType.jpeg.identifier
                     )
-                    self.lastImage = result.image
-                    self.editableCapture = capture.selecting(selectedQuadrilateral)
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                 }
 
@@ -166,6 +166,7 @@ final class CameraModel: NSObject, ObservableObject {
                         self.isApplyingCrop = false
                         self.showDeliveryNotice(
                             saveResult: saveResult,
+                            libraryError: nil,
                             rectangleFound: true,
                             isManualCorrection: true,
                             method: nil
@@ -426,10 +427,15 @@ final class CameraModel: NSObject, ObservableObject {
             automaticQuadrilateral: result.quadrilateral
         )
 
+        var libraryError: Error?
+        do {
+            try library.save(capture: capture, processedImage: result.image)
+        } catch {
+            libraryError = error
+        }
+
         publish {
             UIPasteboard.general.setData(jpegData, forPasteboardType: UTType.jpeg.identifier)
-            self.lastImage = result.image
-            self.editableCapture = capture
             self.isCapturing = false
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
@@ -439,6 +445,7 @@ final class CameraModel: NSObject, ObservableObject {
             self.publish {
                 self.showDeliveryNotice(
                     saveResult: saveResult,
+                    libraryError: libraryError,
                     rectangleFound: result.rectangleFound,
                     isManualCorrection: false,
                     method: method
@@ -487,10 +494,23 @@ final class CameraModel: NSObject, ObservableObject {
 
     private func showDeliveryNotice(
         saveResult: Result<Void, Error>,
+        libraryError: Error?,
         rectangleFound: Bool,
         isManualCorrection: Bool,
         method: SilentCaptureMethod?
     ) {
+        if let libraryError {
+            showNotice(
+                CaptureNotice(
+                    kind: .error,
+                    title: "アプリ内ライブラリへ保存できませんでした",
+                    detail: "画像はコピー済みです。\(libraryError.localizedDescription)"
+                )
+            )
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            return
+        }
+
         switch saveResult {
         case .success:
             let title: String

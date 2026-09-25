@@ -8,8 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		09197D2DA5B5268F88B1EA20 /* CameraScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DCA2B50E23A104D4C2F32FE /* CameraScreen.swift */; };
+		0EDE251EC85EE1017F644480 /* CaptureLibraryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE718A74FBA1345F5BFA627A /* CaptureLibraryTests.swift */; };
 		522128F2D8C8EA098E7DEE55 /* CameraPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9E52B2F4795E71ACF1E439C /* CameraPreview.swift */; };
+		8C17E0D0D2AC2BC50CBF033E /* CaptureLibraryScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F163E8A71E4A7B56C5FD1FD1 /* CaptureLibraryScreen.swift */; };
 		9B5D349963C5125C211F0712 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3C46B5182EE1617825AB8017 /* Assets.xcassets */; };
+		A2530CF5C0CEA3D58239AA09 /* CaptureLibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDEDBBAFCD27B762E241A4A4 /* CaptureLibraryStore.swift */; };
 		A55A5D2AE647C42EF2ABE03B /* CameraModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F80A084FD6E76DB218EE169 /* CameraModel.swift */; };
 		AF4092444A75E4A1A89A45DB /* CropEditorScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FB2AC8EA243B27363518024 /* CropEditorScreen.swift */; };
 		B2A871C9A004EB5F7E40E959 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DD044491C22D4ACD8262010 /* Models.swift */; };
@@ -40,7 +43,10 @@
 		9DD044491C22D4ACD8262010 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		BDE64AFC77993629C17381BB /* LectureScanTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = LectureScanTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C594B8A1D1BEEACE00A26B12 /* DocumentProcessorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentProcessorTests.swift; sourceTree = "<group>"; };
+		EE718A74FBA1345F5BFA627A /* CaptureLibraryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureLibraryTests.swift; sourceTree = "<group>"; };
+		F163E8A71E4A7B56C5FD1FD1 /* CaptureLibraryScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureLibraryScreen.swift; sourceTree = "<group>"; };
 		F9E52B2F4795E71ACF1E439C /* CameraPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPreview.swift; sourceTree = "<group>"; };
+		FDEDBBAFCD27B762E241A4A4 /* CaptureLibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureLibraryStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -69,6 +75,8 @@
 				0F80A084FD6E76DB218EE169 /* CameraModel.swift */,
 				F9E52B2F4795E71ACF1E439C /* CameraPreview.swift */,
 				0DCA2B50E23A104D4C2F32FE /* CameraScreen.swift */,
+				F163E8A71E4A7B56C5FD1FD1 /* CaptureLibraryScreen.swift */,
+				FDEDBBAFCD27B762E241A4A4 /* CaptureLibraryStore.swift */,
 				7FB2AC8EA243B27363518024 /* CropEditorScreen.swift */,
 				67B859C09B503EF647E55B7E /* DocumentProcessor.swift */,
 				2DE2932A7CF86C228B033C7F /* Info.plist */,
@@ -81,6 +89,7 @@
 		9372CD00E8342F5839332735 /* LectureScanTests */ = {
 			isa = PBXGroup;
 			children = (
+				EE718A74FBA1345F5BFA627A /* CaptureLibraryTests.swift */,
 				C594B8A1D1BEEACE00A26B12 /* DocumentProcessorTests.swift */,
 			);
 			path = LectureScanTests;
@@ -178,6 +187,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0EDE251EC85EE1017F644480 /* CaptureLibraryTests.swift in Sources */,
 				DC9FEBF5FE9E486091A43AB0 /* DocumentProcessorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -189,6 +199,8 @@
 				A55A5D2AE647C42EF2ABE03B /* CameraModel.swift in Sources */,
 				522128F2D8C8EA098E7DEE55 /* CameraPreview.swift in Sources */,
 				09197D2DA5B5268F88B1EA20 /* CameraScreen.swift in Sources */,
+				8C17E0D0D2AC2BC50CBF033E /* CaptureLibraryScreen.swift in Sources */,
+				A2530CF5C0CEA3D58239AA09 /* CaptureLibraryStore.swift in Sources */,
 				AF4092444A75E4A1A89A45DB /* CropEditorScreen.swift in Sources */,
 				B32EC0665FD89F52A0967F65 /* DocumentProcessor.swift in Sources */,
 				D83F02F14536610451A66D93 /* LectureScanApp.swift in Sources */,

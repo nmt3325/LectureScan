@@ -8,9 +8,10 @@
   - iOS 18 以降で端末・地域が対応している場合は、Apple の公開 API `isShutterSoundSuppressionEnabled` を使った高画質撮影。
   - シャッター音抑制を利用できない端末・地域では、`AVCaptureVideoDataOutput` の最新フレームを取得する方式へ自動切り替え。静止画シャッターを呼ばず、アプリ側でも撮影音を再生しません。
 - **高頻度リアルタイム矩形検知** — Vision の `VNDetectRectanglesRequest` を軽量化した入力へ約 12.5 fps を上限に実行し、プレビューと同じアスペクトフィル座標で黄色い枠を表示。
-- **自動切り抜き・手動修正** — Core Image の `CIPerspectiveCorrection` で自動補正し、撮影後の画面で四隅をドラッグして切り抜き位置を修正可能。
-- **写真ライブラリ保存・自動コピー** — 補正済み JPEG を写真ライブラリへ自動保存し、同時に `UIPasteboard` へコピー。手動修正版も新しい写真として保存。
-- **授業向け操作** — タップフォーカス、通常時は `.5 / 1× / 2` のようにコンパクトな倍率プリセットを表示し、タップで切り替え。倍率表示をスライドしている間だけ目盛り付き円弧ダイヤルを展開し、円弧スライド・プレビューの2本指回転・ピンチでもズームできます（端末の対応範囲内・最大8倍）。控えめなトーチ、再コピー用サムネイルも備えます。
+- **自動切り抜き・任意の後編集** — Core Image の `CIPerspectiveCorrection` で自動補正。撮影直後はカメラを継続し、必要なときだけ左下の撮影ライブラリから画像を選び、「編集」で四隅を修正できます。ポイントのドラッグ中は周囲を 3 倍に拡大する円形ルーペを表示します。
+- **撮影ライブラリ** — 元画像・補正済み画像・切り抜き情報・サムネイルをアプリ内へ永続保存し、一覧表示、詳細表示、再コピー、後編集に対応します。
+- **写真ライブラリ保存・自動コピー** — 撮影時に補正済み JPEG を写真ライブラリへ自動保存し、同時に `UIPasteboard` へコピー。編集は必須ではなく、手動修正版も新しい写真として保存・コピーします。
+- **授業向け操作** — タップフォーカス、通常時は `.5 / 1× / 2` のようにコンパクトな倍率プリセットを表示し、タップで切り替え。倍率表示をスライドしている間だけ目盛り付き円弧ダイヤルを展開し、指の移動方向と円盤の回転感が一致する方向でズームできます。プレビューの2本指回転・ピンチにも対応します（端末の対応範囲内・最大8倍）。
 - **システム表示倍率に対応** — iOS 18 以降では Apple 公開の `displayVideoZoomFactorMultiplier` を使い、複合カメラの広角端を `.5×` などシステムカメラと同じ基準で表示します。iOS 17 では倍率 1 を基準にフォールバックします。
 - **端末内処理** — 画像のアップロードや外部通信は行いません。
 
@@ -54,36 +55,46 @@ xcodebuild \
 
 > iOS Simulator にはカメラがないため、カメラ入力・撮影音・トーチは実機で確認してください。画像補正ロジックのユニットテストは Simulator で実行できます。
 
-## 未署名 IPA の CI
+## 未署名 IPA・AltStore / LiveContainer 配布
 
-GitHub Actions の **Unsigned IPA** ワークフローを手動実行すると、実機向け Release ビルドを署名なしで作成し、次のファイルを Artifact として 14 日間保存します。
+`main` へコミットが push されるたびに GitHub Actions の **Unsigned IPA** が自動実行されます（手動実行も可能です）。実機向け Release ビルドを署名なしで作成し、Workflow Artifact に加えて `nightly` リリースへ次のファイルを更新します。
 
 - `LectureScan-unsigned.ipa`
 - `LectureScan-unsigned.ipa.sha256`
+- `altstore-source.json`
 
-実行手順:
+### 公開 URL
 
-1. リポジトリの **Actions** を開く
-2. **Unsigned IPA** を選択する
-3. **Run workflow** を実行する
-4. 完了した run の **Artifacts** から `LectureScan-unsigned-<commit SHA>` をダウンロードする
+- リポジトリ: <https://github.com/nmt3325/LectureScan>
+- AltStore / SideStore / LiveContainer 互換ソース: <https://github.com/nmt3325/LectureScan/releases/download/nightly/altstore-source.json>
+- 最新の未署名 IPA: <https://github.com/nmt3325/LectureScan/releases/download/nightly/LectureScan-unsigned.ipa>
+- Nightly リリース: <https://github.com/nmt3325/LectureScan/releases/tag/nightly>
 
-ワークフローは `macos-15` で Xcode 26.6（利用できない場合は runner の既定 Xcode）を選択し、`iphoneos` 向けにビルドし、署名・プロビジョニングプロファイルが含まれていないことを確認してから IPA を生成します。署名証明書や秘密情報を GitHub に登録する必要はありません。
+AltStore の「Sources」には上記の互換ソース URL を追加してください。LiveContainer の Sources にも同じ URL を追加できます。URL スキームを使う場合:
 
-> 未署名 IPA はそのまま通常の iPhone へインストールできません。使用する端末と Apple ID に対応した証明書・プロビジョニングプロファイルで、利用者自身が再署名してください。また、PRIVATE リポジトリの macOS runner は課金対象のため、GitHub Actions の spending limit を有効にしてから実行してください。
+```text
+altstore://source?url=https%3A%2F%2Fgithub.com%2Fnmt3325%2FLectureScan%2Freleases%2Fdownload%2Fnightly%2Faltstore-source.json
+livecontainer://install?url=https%3A%2F%2Fgithub.com%2Fnmt3325%2FLectureScan%2Freleases%2Fdownload%2Fnightly%2FLectureScan-unsigned.ipa
+```
+
+ワークフローは `macos-15` で Xcode 26.6（利用できない場合は runner の既定 Xcode）を選択し、`iphoneos` 向けにビルドします。署名・プロビジョニングプロファイルが含まれていないことを検証し、コミットごとの build number、IPA サイズ、ダウンロード URL を含む AltStore v2 互換 JSON を生成します。LiveContainer の AltStore source parser が読む `versions` / `buildNumber` 形式にも対応しています。
+
+> 未署名 IPA を通常の iPhone アプリとして直接インストールする場合は、利用する端末と Apple ID に対応した証明書・プロビジョニングプロファイルで再署名してください。LiveContainer へ読み込む場合は、LiveContainer 側の導入・署名要件に従ってください。
 
 ## 構成
 
 - `CameraModel.swift` — AVFoundation セッション、無音方式の選択、撮影、クリップボード
 - `CameraPreview.swift` — プレビュー、矩形オーバーレイ、タップフォーカス
 - `DocumentProcessor.swift` — Vision 検知、台形補正、画質調整
-- `CameraScreen.swift` — SwiftUI カメラ UI
-- `CropEditorScreen.swift` — 四隅をドラッグできる撮影後の切り抜き修正 UI
+- `CameraScreen.swift` — SwiftUI カメラ UI と左下のライブラリ導線
+- `CaptureLibraryStore.swift` — 元画像・補正画像・メタデータ・サムネイルの永続保存
+- `CaptureLibraryScreen.swift` — 撮影一覧、詳細、コピー、後編集 UI
+- `CropEditorScreen.swift` — 四隅をドラッグできる切り抜き修正 UI と円形拡大ルーペ
 - `LectureScanTests/` — Core Image 補正処理のテスト
 
 ## プライバシー
 
-撮影画像は端末内で処理され、補正後の JPEG を写真ライブラリへ保存してクリップボードにも書き込みます。写真への追加権限のみを要求し、画像の読み取りや外部サーバーへの送信は行いません。
+撮影画像は端末内で処理されます。補正後の JPEG を写真ライブラリへ保存してクリップボードにも書き込み、後編集用の元画像と補正画像をアプリの Application Support 内にも保存します。写真への追加権限のみを要求し、写真ライブラリの読み取りや外部サーバーへの画像送信は行いません。アプリ内ライブラリはアプリを削除すると消えますが、写真ライブラリへ保存済みの画像は残ります。
 
 ## License
 

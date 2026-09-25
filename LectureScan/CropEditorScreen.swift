@@ -92,7 +92,7 @@ struct CropEditorScreen: View {
     }
 
     private func applyCrop() {
-        camera.applyManualCrop(quadrilateral) { succeeded in
+        camera.applyManualCrop(quadrilateral, to: capture) { succeeded in
             if succeeded {
                 dismiss()
             }
@@ -105,6 +105,7 @@ private struct CropCanvas: View {
     @Binding var quadrilateral: DetectedQuadrilateral
 
     private let coordinateSpaceName = "LectureScanCropCanvas"
+    @State private var activeCorner: CropCorner?
 
     var body: some View {
         GeometryReader { geometry in
@@ -149,7 +150,31 @@ private struct CropCanvas: View {
                 ForEach(CropCorner.allCases) { corner in
                     handle(for: corner, contentRect: contentRect)
                 }
+
+                if let activeCorner {
+                    let focusPoint = ImageDisplayGeometry.viewPoint(
+                        fromVisionPoint: quadrilateral.point(for: activeCorner),
+                        contentRect: contentRect
+                    )
+                    CropPointMagnifier(
+                        image: image,
+                        displayedImageRect: contentRect,
+                        focusPoint: focusPoint
+                    )
+                    .frame(width: 118, height: 118)
+                    .position(
+                        magnifierPosition(
+                            for: focusPoint,
+                            in: bounds,
+                            diameter: 118
+                        )
+                    )
+                    .allowsHitTesting(false)
+                    .zIndex(10)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                }
             }
+            .animation(.easeOut(duration: 0.12), value: activeCorner)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -182,11 +207,17 @@ private struct CropCanvas: View {
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
                 .onChanged { value in
+                    activeCorner = corner
                     let normalizedPoint = ImageDisplayGeometry.visionPoint(
                         fromViewPoint: value.location,
                         contentRect: contentRect
                     )
                     quadrilateral = quadrilateral.moving(corner, to: normalizedPoint)
+                }
+                .onEnded { _ in
+                    if activeCorner == corner {
+                        activeCorner = nil
+                    }
                 }
         )
         .accessibilityLabel("\(corner.accessibilityLabel)の切り抜き位置")
@@ -225,5 +256,81 @@ private struct CropCanvas: View {
         path.addRect(contentRect)
         path.addPath(polygon)
         return path
+    }
+
+    private func magnifierPosition(
+        for focusPoint: CGPoint,
+        in bounds: CGRect,
+        diameter: CGFloat
+    ) -> CGPoint {
+        let radius = diameter / 2
+        let horizontalPadding: CGFloat = 8
+        let x = min(
+            max(focusPoint.x, bounds.minX + radius + horizontalPadding),
+            bounds.maxX - radius - horizontalPadding
+        )
+        let preferredAbove = focusPoint.y - radius - 42
+        let y = preferredAbove >= bounds.minY + radius + 8
+            ? preferredAbove
+            : min(focusPoint.y + radius + 42, bounds.maxY - radius - 8)
+        return CGPoint(x: x, y: y)
+    }
+}
+
+private struct CropPointMagnifier: View {
+    let image: UIImage
+    let displayedImageRect: CGRect
+    let focusPoint: CGPoint
+
+    private let zoomScale: CGFloat = 3
+
+    var body: some View {
+        GeometryReader { geometry in
+            let center = CGPoint(
+                x: geometry.size.width / 2,
+                y: geometry.size.height / 2
+            )
+
+            ZStack {
+                Color.black
+
+                Image(uiImage: image)
+                    .resizable()
+                    .frame(
+                        width: displayedImageRect.width * zoomScale,
+                        height: displayedImageRect.height * zoomScale
+                    )
+                    .position(
+                        x: center.x + (displayedImageRect.midX - focusPoint.x) * zoomScale,
+                        y: center.y + (displayedImageRect.midY - focusPoint.y) * zoomScale
+                    )
+
+                Path { path in
+                    path.move(to: CGPoint(x: center.x - 15, y: center.y))
+                    path.addLine(to: CGPoint(x: center.x + 15, y: center.y))
+                    path.move(to: CGPoint(x: center.x, y: center.y - 15))
+                    path.addLine(to: CGPoint(x: center.x, y: center.y + 15))
+                }
+                .stroke(.yellow, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+
+                Circle()
+                    .stroke(.white.opacity(0.9), lineWidth: 2)
+                    .padding(2)
+
+                Circle()
+                    .stroke(.yellow, lineWidth: 3)
+
+                Text("3×")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(.yellow, in: Capsule())
+                    .position(x: geometry.size.width - 22, y: 18)
+            }
+            .clipShape(Circle())
+            .shadow(color: .black.opacity(0.65), radius: 8, y: 4)
+        }
+        .accessibilityHidden(true)
     }
 }

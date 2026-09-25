@@ -1,30 +1,35 @@
 name: Unsigned IPA
 
-# macOS hosted runners consume billable minutes for private repositories.
-# Run this workflow manually after enabling an Actions spending limit.
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: unsigned-ipa-${{ github.ref }}
+  group: unsigned-ipa-main
   cancel-in-progress: true
 
 jobs:
   build-unsigned-ipa:
-    name: Build unsigned device IPA
+    name: Build and publish unsigned device IPA
     runs-on: macos-15
     timeout-minutes: 30
     env:
       APP_NAME: LectureScan
       DERIVED_DATA: ${{ github.workspace }}/build/DerivedData
       ARTIFACT_DIR: ${{ github.workspace }}/build/artifacts
+      DOWNLOAD_URL: https://github.com/nmt3325/LectureScan/releases/download/nightly/LectureScan-unsigned.ipa
+      SOURCE_URL: https://github.com/nmt3325/LectureScan/releases/download/nightly/altstore-source.json
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Select Xcode
         run: |
@@ -35,6 +40,21 @@ jobs:
           fi
           xcodebuild -version
           xcodebuild -showsdks
+
+      - name: Resolve build metadata
+        run: |
+          set -euo pipefail
+          version=$(xcodebuild \
+            -project LectureScan.xcodeproj \
+            -scheme LectureScan \
+            -configuration Release \
+            -showBuildSettings | awk '/ MARKETING_VERSION = / { print $3; exit }')
+          test -n "$version"
+          {
+            echo "MARKETING_VERSION=$version"
+            echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER"
+            echo "RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_ENV"
 
       - name: Build unsigned app for iPhoneOS
         run: |
@@ -47,6 +67,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$DERIVED_DATA" \
             clean build \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -55,7 +76,6 @@ jobs:
       - name: Package and verify unsigned IPA
         run: |
           set -euo pipefail
-
           app_path="$DERIVED_DATA/Build/Products/Release-iphoneos/$APP_NAME.app"
           ipa_path="$ARTIFACT_DIR/$APP_NAME-unsigned.ipa"
 
@@ -63,8 +83,6 @@ jobs:
           rm -rf "$ARTIFACT_DIR"
           mkdir -p "$ARTIFACT_DIR/Payload"
           ditto "$app_path" "$ARTIFACT_DIR/Payload/$APP_NAME.app"
-
-          # An unsigned package must not contain a provisioning profile or signature directory.
           rm -rf "$ARTIFACT_DIR/Payload/$APP_NAME.app/_CodeSignature"
           rm -f "$ARTIFACT_DIR/Payload/$APP_NAME.app/embedded.mobileprovision"
 
@@ -78,17 +96,68 @@ jobs:
             /usr/bin/zip -qry "$ipa_path" Payload
             /usr/bin/shasum -a 256 "$APP_NAME-unsigned.ipa" > "$APP_NAME-unsigned.ipa.sha256"
           )
-
           /usr/bin/unzip -t "$ipa_path"
-          /usr/bin/du -h "$ipa_path"
+          echo "IPA_SIZE=$(stat -f%z "$ipa_path")" >> "$GITHUB_ENV"
 
-      - name: Upload unsigned IPA
+      - name: Generate AltStore and LiveContainer source
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/generate_altstore_source.py \
+            --output "$ARTIFACT_DIR/altstore-source.json" \
+            --version "$MARKETING_VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --size "$IPA_SIZE" \
+            --download-url "$DOWNLOAD_URL" \
+            --commit "$GITHUB_SHA" \
+            --date "$RELEASED_AT"
+          python3 -m json.tool "$ARTIFACT_DIR/altstore-source.json" >/dev/null
+
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: LectureScan-unsigned-${{ github.sha }}
           path: |
             build/artifacts/LectureScan-unsigned.ipa
             build/artifacts/LectureScan-unsigned.ipa.sha256
+            build/artifacts/altstore-source.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
           compression-level: 0
+
+      - name: Publish rolling nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git tag -f nightly "$GITHUB_SHA"
+          git push origin refs/tags/nightly --force
+
+          cat > "$ARTIFACT_DIR/release-notes.md" <<EOF
+          Automated unsigned build from commit [$GITHUB_SHA](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA).
+
+          - Version: $MARKETING_VERSION ($BUILD_NUMBER)
+          - AltStore / SideStore / LiveContainer source: $SOURCE_URL
+          - The IPA is unsigned and intended for re-signing or LiveContainer import.
+          EOF
+
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit nightly \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "LectureScan Nightly" \
+              --notes-file "$ARTIFACT_DIR/release-notes.md" \
+              --prerelease
+          else
+            gh release create nightly \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "LectureScan Nightly" \
+              --notes-file "$ARTIFACT_DIR/release-notes.md" \
+              --prerelease
+          fi
+
+          gh release upload nightly \
+            "$ARTIFACT_DIR/LectureScan-unsigned.ipa" \
+            "$ARTIFACT_DIR/LectureScan-unsigned.ipa.sha256" \
+            "$ARTIFACT_DIR/altstore-source.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber

@@ -24,7 +24,7 @@ enum CropCorner: String, CaseIterable, Identifiable {
     }
 }
 
-struct DetectedQuadrilateral: Equatable {
+struct DetectedQuadrilateral: Equatable, Codable {
     let topLeft: CGPoint
     let topRight: CGPoint
     let bottomLeft: CGPoint
@@ -266,6 +266,20 @@ struct CameraZoomRange: Equatable {
 
     func clamped(_ factor: CGFloat) -> CGFloat {
         min(max(factor, minimum), maximum)
+    }
+}
+
+enum ZoomDialMath {
+    static func factor(
+        from startFactor: CGFloat,
+        angleDelta: CGFloat,
+        radiansPerDoubling: CGFloat,
+        range: CameraZoomRange
+    ) -> CGFloat {
+        guard radiansPerDoubling > 0 else { return range.clamped(startFactor) }
+        let octaves = -angleDelta / radiansPerDoubling
+        let multiplier = CGFloat(pow(2, Double(octaves)))
+        return range.clamped(startFactor * multiplier)
     }
 }
 
