@@ -27,6 +27,26 @@ final class RectangleResolverTests: XCTestCase {
         XCTAssertEqual(resolution, .abstain(.frameLikeDocument))
     }
 
+    func testHighConfidenceEdgeAttachedStripDocumentIsRejected() {
+        let document = candidate(
+            quadrilateral(left: 0.004, bottom: 0.004, right: 1, top: 0.25),
+            detector: .documentSegmentation,
+            confidence: 0.97
+        )
+
+        let validation = RectangleValidator().validate(document, imageSize: imageSize)
+        let resolution = resolver.resolve(
+            batch(document: document),
+            prior: nil,
+            mode: .still
+        )
+
+        XCTAssertTrue(validation.isHardValid)
+        XCTAssertFalse(validation.frameLikeRisk)
+        XCTAssertTrue(validation.hasSoftShapeRisk)
+        XCTAssertEqual(resolution, .abstain(.insufficientEvidence))
+    }
+
     func testMediumConfidenceDocumentUsesSecondRectangleForConsensus() throws {
         let target = quadrilateral(left: 0.34, bottom: 0.14, right: 0.76, top: 0.79)
         let document = candidate(
@@ -74,6 +94,134 @@ final class RectangleResolverTests: XCTestCase {
         )
 
         XCTAssertEqual(resolution, .abstain(.detectorDisagreement))
+    }
+
+    func testStillHighConfidenceDocumentCanExplainDetectedSubstructure() throws {
+        let document = candidate(
+            quadrilateral(left: 0.12, bottom: 0.10, right: 0.88, top: 0.90),
+            detector: .documentSegmentation,
+            confidence: 0.90
+        )
+        let containedRectangle = candidate(
+            quadrilateral(left: 0.24, bottom: 0.54, right: 0.76, top: 0.78),
+            detector: .rectangle,
+            index: 0
+        )
+
+        let selection = try XCTUnwrap(resolver.resolve(
+            batch(document: document, rectangles: [containedRectangle]),
+            prior: nil,
+            mode: .still
+        ).selection)
+
+        XCTAssertEqual(selection.evidence, .highConfidenceDocument)
+        XCTAssertEqual(selection.candidate, document)
+    }
+
+    func testLiveContainedSubstructureRemainsAmbiguous() {
+        let document = candidate(
+            quadrilateral(left: 0.12, bottom: 0.10, right: 0.88, top: 0.90),
+            detector: .documentSegmentation,
+            confidence: 0.90
+        )
+        let containedRectangle = candidate(
+            quadrilateral(left: 0.24, bottom: 0.54, right: 0.76, top: 0.78),
+            detector: .rectangle,
+            index: 0
+        )
+
+        XCTAssertEqual(
+            resolver.resolve(
+                batch(document: document, rectangles: [containedRectangle]),
+                prior: nil,
+                mode: .liveAcquisition
+            ),
+            .abstain(.detectorDisagreement)
+        )
+    }
+
+    func testStillHighConfidenceDocumentDoesNotOverrideUnrelatedRectangle() {
+        let document = candidate(
+            quadrilateral(left: 0.08, bottom: 0.12, right: 0.46, top: 0.88),
+            detector: .documentSegmentation,
+            confidence: 0.90
+        )
+        let unrelatedRectangle = candidate(
+            quadrilateral(left: 0.58, bottom: 0.18, right: 0.92, top: 0.82),
+            detector: .rectangle,
+            index: 0
+        )
+
+        XCTAssertEqual(
+            resolver.resolve(
+                batch(document: document, rectangles: [unrelatedRectangle]),
+                prior: nil,
+                mode: .still
+            ),
+            .abstain(.detectorDisagreement)
+        )
+    }
+
+    func testStillMediumConfidenceDocumentRecoversEnclosingRectangle() throws {
+        let document = candidate(
+            quadrilateral(left: 0.36, bottom: 0.32, right: 0.64, top: 0.68),
+            detector: .documentSegmentation,
+            confidence: 0.50
+        )
+        let enclosingRectangle = candidate(
+            quadrilateral(left: 0.18, bottom: 0.12, right: 0.82, top: 0.88),
+            detector: .rectangle,
+            index: 0
+        )
+
+        let selection = try XCTUnwrap(resolver.resolve(
+            batch(document: document, rectangles: [enclosingRectangle]),
+            prior: nil,
+            mode: .still
+        ).selection)
+
+        XCTAssertEqual(selection.evidence, .enclosingRectangleRecovery)
+        XCTAssertEqual(selection.candidate, enclosingRectangle)
+    }
+
+    func testStillHighConfidenceInnerDocumentPrefersSafeOuterFrame() throws {
+        let document = candidate(
+            quadrilateral(left: 0.36, bottom: 0.32, right: 0.64, top: 0.68),
+            detector: .documentSegmentation,
+            confidence: 0.90
+        )
+        let outerFrame = candidate(
+            quadrilateral(left: 0.18, bottom: 0.12, right: 0.82, top: 0.88),
+            detector: .rectangle,
+            index: 0
+        )
+
+        let selection = try XCTUnwrap(resolver.resolve(
+            batch(document: document, rectangles: [outerFrame]),
+            prior: nil,
+            mode: .still
+        ).selection)
+
+        XCTAssertEqual(selection.evidence, .enclosingRectangleRecovery)
+        XCTAssertEqual(selection.candidate, outerFrame)
+    }
+
+    func testDuplicateObservationKeepsNestedTargetsDistinct() {
+        let outer = quadrilateral(left: 0.15, bottom: 0.12, right: 0.85, top: 0.88)
+        let repeatedOuter = quadrilateral(left: 0.152, bottom: 0.122, right: 0.848, top: 0.878)
+        let inner = quadrilateral(left: 0.23, bottom: 0.20, right: 0.77, top: 0.80)
+
+        XCTAssertTrue(RectangleGeometry.isDuplicateObservation(
+            outer,
+            repeatedOuter,
+            imageSize: imageSize
+        ))
+        XCTAssertFalse(RectangleGeometry.isDuplicateObservation(
+            outer,
+            inner,
+            imageSize: imageSize
+        ))
+        XCTAssertTrue(RectangleGeometry.contains(outer, inner))
     }
 
     func testClearlyLargestRectangleBeatsHigherRankedCenteredSmallRectangle() throws {
@@ -784,7 +932,11 @@ final class RectangleDetectionIntegrationTests: XCTestCase {
                 ?? bundle.url(forResource: name, withExtension: "png")
         )
         let image = try XCTUnwrap(CIImage(contentsOf: imageURL))
-        let batch = try processor.detectCandidates(in: image, requestSet: .dual)
+        let batch = try processor.detectCandidates(
+            in: image,
+            requestSet: .dual,
+            quality: .still
+        )
         return (
             resolver.resolve(batch, prior: nil, mode: .still),
             fixture.expected,

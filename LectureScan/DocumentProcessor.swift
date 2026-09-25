@@ -35,7 +35,8 @@ final class DocumentProcessor {
     func detectCandidates(
         in image: CIImage,
         requestSet: RectangleRequestSet,
-        maximumDimension: CGFloat? = nil
+        maximumDimension: CGFloat? = nil,
+        quality: RectangleDetectionQuality = .preview
     ) throws -> RectangleCandidateBatch {
         let source = normalized(image)
         guard !source.extent.isEmpty else {
@@ -47,9 +48,17 @@ final class DocumentProcessor {
             )
         }
 
+        let detectionMaximumDimension: CGFloat? = {
+            switch quality {
+            case .preview:
+                return maximumDimension
+            case .still:
+                return maximumDimension ?? 2_048
+            }
+        }()
         let detectionImage = imageForDetection(
             source,
-            maximumDimension: maximumDimension
+            maximumDimension: detectionMaximumDimension
         )
         let documentRequest: VNDetectDocumentSegmentationRequest? = {
             guard requestSet == .document || requestSet == .dual else { return nil }
@@ -57,29 +66,40 @@ final class DocumentProcessor {
             request.revision = VNDetectDocumentSegmentationRequestRevision1
             return request
         }()
-        let rectangleRequest: VNDetectRectanglesRequest? = {
+        let primaryRectangleRequest: VNDetectRectanglesRequest? = {
             guard requestSet == .rectangle || requestSet == .dual else { return nil }
-            let request = VNDetectRectanglesRequest()
-            request.maximumObservations = 15
-            request.minimumConfidence = 0.55
-            request.minimumSize = 0.16
-            request.minimumAspectRatio = 0.22
-            request.maximumAspectRatio = 1.0
-            request.quadratureTolerance = 35
-            return request
+            return rectangleRequest(profile: .preview)
         }()
 
         var requests: [VNRequest] = []
         if let documentRequest { requests.append(documentRequest) }
-        if let rectangleRequest { requests.append(rectangleRequest) }
-        let handler = VNImageRequestHandler(
+        if let primaryRectangleRequest { requests.append(primaryRectangleRequest) }
+        try VNImageRequestHandler(
             ciImage: detectionImage,
             orientation: .up,
             options: [:]
-        )
-        try handler.perform(requests)
+        ).perform(requests)
+
+        var collectedRectangleObservations = primaryRectangleRequest?.results ?? []
+        if quality == .still, primaryRectangleRequest != nil {
+            for profile in RectangleRequestProfile.stillRecoveryProfiles {
+                if let recovered = try? rectangleObservations(
+                    in: detectionImage,
+                    profile: profile
+                ) {
+                    collectedRectangleObservations.append(contentsOf: recovered)
+                }
+            }
+            if let recovered = try? rectangleObservations(
+                in: recoveryDetectionImage(detectionImage),
+                profile: .enhancedRecovery
+            ) {
+                collectedRectangleObservations.append(contentsOf: recovered)
+            }
+        }
 
         let sourceSize = source.extent.size
+        let detectionSize = detectionImage.extent.size
         let document = documentRequest?.results?.first.map {
             candidate(
                 from: $0,
@@ -88,17 +108,20 @@ final class DocumentProcessor {
                 sourceSize: sourceSize
             )
         }
-        let rectangles = (rectangleRequest?.results ?? []).enumerated().map {
-            candidate(
-                from: $0.element,
-                detector: .rectangle,
-                originalIndex: $0.offset,
-                sourceSize: sourceSize
-            )
-        }
+        let rectangles = deduplicatedRectangleCandidates(
+            collectedRectangleObservations.enumerated().map {
+                candidate(
+                    from: $0.element,
+                    detector: .rectangle,
+                    originalIndex: $0.offset,
+                    sourceSize: sourceSize
+                )
+            },
+            imageSize: detectionSize
+        )
         return RectangleCandidateBatch(
             sourceSize: sourceSize,
-            detectionSize: detectionImage.extent.size,
+            detectionSize: detectionSize,
             document: document,
             rectangles: rectangles
         )
@@ -114,7 +137,8 @@ final class DocumentProcessor {
         let batch = try detectCandidates(
             in: image,
             requestSet: requestSet,
-            maximumDimension: maximumDimension
+            maximumDimension: maximumDimension,
+            quality: mode == .still ? .still : .preview
         )
         return resolver.resolve(batch, prior: prior, mode: mode)
             .selection?.candidate.quadrilateral
@@ -150,6 +174,61 @@ final class DocumentProcessor {
             sourceImage: try render(source),
             quadrilateral: rectangle
         )
+    }
+
+    private func rectangleRequest(
+        profile: RectangleRequestProfile
+    ) -> VNDetectRectanglesRequest {
+        let request = VNDetectRectanglesRequest()
+        request.maximumObservations = profile.maximumObservations
+        request.minimumConfidence = profile.minimumConfidence
+        request.minimumSize = profile.minimumSize
+        request.minimumAspectRatio = profile.minimumAspectRatio
+        request.maximumAspectRatio = 1
+        request.quadratureTolerance = profile.quadratureTolerance
+        return request
+    }
+
+    private func rectangleObservations(
+        in image: CIImage,
+        profile: RectangleRequestProfile
+    ) throws -> [VNRectangleObservation] {
+        let request = rectangleRequest(profile: profile)
+        try VNImageRequestHandler(
+            ciImage: image,
+            orientation: .up,
+            options: [:]
+        ).perform([request])
+        return request.results ?? []
+    }
+
+    private func recoveryDetectionImage(_ image: CIImage) -> CIImage {
+        let color = CIFilter.colorControls()
+        color.inputImage = image
+        color.saturation = 0
+        color.contrast = 1.42
+
+        let sharpen = CIFilter.unsharpMask()
+        sharpen.inputImage = color.outputImage ?? image
+        sharpen.radius = 2
+        sharpen.intensity = 0.75
+        return (sharpen.outputImage ?? color.outputImage ?? image).cropped(to: image.extent)
+    }
+
+    private func deduplicatedRectangleCandidates(
+        _ candidates: [RectangleCandidate],
+        imageSize: CGSize
+    ) -> [RectangleCandidate] {
+        candidates.reduce(into: []) { result, candidate in
+            let isDuplicate = result.contains {
+                RectangleGeometry.isDuplicateObservation(
+                    $0.quadrilateral,
+                    candidate.quadrilateral,
+                    imageSize: imageSize
+                )
+            }
+            if !isDuplicate { result.append(candidate) }
+        }
     }
 
     private func candidate(

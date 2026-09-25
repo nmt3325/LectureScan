@@ -57,27 +57,29 @@ xcodebuild \
 
 ## 未署名 IPA・AltStore / LiveContainer 配布
 
-`main` へコミットが push されるたびに GitHub Actions の **Unsigned IPA** が自動実行されます（手動実行も可能です）。実機向け Release ビルドを署名なしで作成し、Workflow Artifact に加えて `nightly` リリースへ次のファイルを更新します。
+`main` へコミットが push されるたびに GitHub Actions の **Unsigned IPA** が自動実行されます（手動実行も可能です）。実機向け Release ビルドを署名なしで作成し、Workflow Artifact と `nightly` リリースを更新します。
 
-- `LectureScan-unsigned.ipa`
-- `LectureScan-unsigned.ipa.sha256`
-- `altstore-source.json`
+- 手動ダウンロード用の `LectureScan-unsigned.ipa` と SHA-256
+- source が参照する実行固有の `LectureScan-unsigned-<build>-<run-id>.ipa`
+- 後方互換用の `altstore-source.json` リリース asset
 
 ### 公開 URL
 
 - リポジトリ: <https://github.com/nmt3325/LectureScan>
-- AltStore / SideStore / LiveContainer 互換ソース: <https://github.com/nmt3325/LectureScan/releases/download/nightly/altstore-source.json>
-- 最新の未署名 IPA: <https://github.com/nmt3325/LectureScan/releases/download/nightly/LectureScan-unsigned.ipa>
+- **固定 AltStore / SideStore / LiveContainer source**: <https://raw.githubusercontent.com/nmt3325/LectureScan/altstore-source/altstore-source.json>
+- 最新の未署名 IPA（手動取得用）: <https://github.com/nmt3325/LectureScan/releases/download/nightly/LectureScan-unsigned.ipa>
 - Nightly リリース: <https://github.com/nmt3325/LectureScan/releases/tag/nightly>
 
-AltStore の「Sources」には上記の互換ソース URL を追加してください。LiveContainer の Sources にも同じ URL を追加できます。URL スキームを使う場合:
+AltStore の「Sources」には太字の固定 source URL を追加してください。LiveContainer の Sources にも同じ URL を追加できます。以前の Release asset URL を登録している場合は、キャッシュ回避のため固定 source URLへ登録し直してください。URL スキームを使う場合:
 
 ```text
-altstore://source?url=https%3A%2F%2Fgithub.com%2Fnmt3325%2FLectureScan%2Freleases%2Fdownload%2Fnightly%2Faltstore-source.json
+altstore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnmt3325%2FLectureScan%2Faltstore-source%2Faltstore-source.json
 livecontainer://install?url=https%3A%2F%2Fgithub.com%2Fnmt3325%2FLectureScan%2Freleases%2Fdownload%2Fnightly%2FLectureScan-unsigned.ipa
 ```
 
 ワークフローは `macos-15` で Xcode 26.6（利用できない場合は runner の既定 Xcode）を選択し、`iphoneos` 向けにビルドします。署名・プロビジョニングプロファイルが含まれていないことを検証し、コミットごとの build number、IPA サイズ、ダウンロード URL を含む AltStore v2 互換 JSON を生成します。LiveContainer の AltStore source parser が読む `versions` / `buildNumber` 形式にも対応しています。
+
+固定 JSON は専用の orphan branch `altstore-source` に1ファイルだけ公開します。先に実行固有名の IPA を Release へアップロードし、その成功後に JSON を更新するため、source が未公開 IPA を指す時間はありません。JSON 内の `downloadURL` は毎回異なる不変 asset URL になり、同名 `nightly` IPA の CDN キャッシュで旧ビルドを取得する問題を避けます。固定 JSON 自体には短時間の HTTP キャッシュがあり得ます。
 
 > 未署名 IPA を通常の iPhone アプリとして直接インストールする場合は、利用する端末と Apple ID に対応した証明書・プロビジョニングプロファイルで再署名してください。LiveContainer へ読み込む場合は、LiveContainer 側の導入・署名要件に従ってください。
 

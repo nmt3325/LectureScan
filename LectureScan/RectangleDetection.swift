@@ -12,6 +12,52 @@ enum RectangleRequestSet: Equatable {
     case dual
 }
 
+enum RectangleDetectionQuality: Equatable {
+    case preview
+    case still
+}
+
+struct RectangleRequestProfile: Equatable {
+    let maximumObservations: Int
+    let minimumConfidence: Float
+    let minimumSize: Float
+    let minimumAspectRatio: Float
+    let quadratureTolerance: Float
+
+    static let preview = RectangleRequestProfile(
+        maximumObservations: 15,
+        minimumConfidence: 0.55,
+        minimumSize: 0.16,
+        minimumAspectRatio: 0.22,
+        quadratureTolerance: 35
+    )
+    static let stillBalanced = RectangleRequestProfile(
+        maximumObservations: 20,
+        minimumConfidence: 0.30,
+        minimumSize: 0.08,
+        minimumAspectRatio: 0.12,
+        quadratureTolerance: 45
+    )
+    static let stillRecall = RectangleRequestProfile(
+        maximumObservations: 20,
+        minimumConfidence: 0.10,
+        minimumSize: 0.03,
+        minimumAspectRatio: 0.08,
+        quadratureTolerance: 45
+    )
+    static let enhancedRecovery = RectangleRequestProfile(
+        maximumObservations: 20,
+        minimumConfidence: 0.20,
+        minimumSize: 0.05,
+        minimumAspectRatio: 0.08,
+        quadratureTolerance: 45
+    )
+    static let stillRecoveryProfiles: [RectangleRequestProfile] = [
+        .stillBalanced,
+        .stillRecall
+    ]
+}
+
 struct RectangleCandidate: Equatable {
     let quadrilateral: DetectedQuadrilateral
     let detector: RectangleDetectorKind
@@ -46,6 +92,7 @@ enum RectangleSelectionEvidence: Equatable {
     case crossDetectorConsensus
     case highConfidenceDocument
     case largestAreaPreference
+    case enclosingRectangleRecovery
     case rectangleAcquisition
 }
 
@@ -276,6 +323,47 @@ enum RectangleGeometry {
         )
     }
 
+    static func isDuplicateObservation(
+        _ lhs: DetectedQuadrilateral,
+        _ rhs: DetectedQuadrilateral,
+        imageSize: CGSize
+    ) -> Bool {
+        let iou = polygonIoU(lhs, rhs)
+        let lhsArea = max(lhs.approximateArea, 0.000_001)
+        let rhsArea = max(rhs.approximateArea, 0.000_001)
+        let areaRatio = min(lhsArea / rhsArea, rhsArea / lhsArea)
+        let lhsBox = boundingBox(lhs)
+        let rhsBox = boundingBox(rhs)
+        let diagonal = max(min(
+            hypot(lhsBox.width * imageSize.width, lhsBox.height * imageSize.height),
+            hypot(rhsBox.width * imageSize.width, rhsBox.height * imageSize.height)
+        ), 1)
+        let cornerDistance = meanCornerDistance(lhs, rhs, imageSize: imageSize) / diagonal
+        return iou >= 0.88 || (cornerDistance <= 0.04 && areaRatio >= 0.80)
+    }
+
+    static func contains(
+        _ outer: DetectedQuadrilateral,
+        _ inner: DetectedQuadrilateral,
+        tolerance: CGFloat = 0.02
+    ) -> Bool {
+        let polygon = points(outer)
+        let orientation = signedArea(polygon)
+        guard abs(orientation) > 0.000_001 else { return false }
+        return points(inner).allSatisfy { point in
+            polygon.indices.allSatisfy { index in
+                let start = polygon[index]
+                let end = polygon[(index + 1) % polygon.count]
+                let edge = subtract(end, start)
+                let signedDistance = cross(edge, subtract(point, start))
+                    / max(hypot(edge.x, edge.y), 0.000_001)
+                return orientation > 0
+                    ? signedDistance >= -tolerance
+                    : signedDistance <= tolerance
+            }
+        }
+    }
+
     static func distance(_ lhs: CGPoint, _ rhs: CGPoint) -> CGFloat {
         hypot(lhs.x - rhs.x, lhs.y - rhs.y)
     }
@@ -401,11 +489,16 @@ struct RectangleValidator {
         let slightlyOutside = normalized.contains {
             $0.x < 0 || $0.x > 1 || $0.y < 0 || $0.y > 1
         }
+        // A strip attached to three image edges is a common false positive from
+        // document segmentation (for example, a desk or wall band). Confidence can
+        // still be close to 1, so shape/border evidence must veto it.
+        let edgeAttachedRisk = distinctSides >= 3
         let softRisk = area < policy.softMinimumArea
             || fillRatio < policy.softMinimumFillRatio
             || minimumAngle < policy.softMinimumAngleDegrees
             || maximumAngle > policy.softMaximumAngleDegrees
             || slightlyOutside
+            || edgeAttachedRisk
         let hardValid = imageSize.width > 0 && imageSize.height > 0
             && finite && inOuterBounds && !selfIntersects && isConvex(points: normalized)
             && area >= policy.minimumNormalizedArea
@@ -574,11 +667,29 @@ struct RectangleResolver {
             ))
         }
 
+        if mode == .still,
+           let document = validDocument,
+           document.0.confidence >= policy.documentMediumConfidence,
+           !document.1.frameLikeRisk,
+           let enclosing = enclosingRectangle(
+            around: document,
+            rectangles: strictAreaRectangles
+           ) {
+            return .selected(RectangleSelection(
+                candidate: enclosing,
+                evidence: .enclosingRectangleRecovery
+            ))
+        }
+
         if let document = validDocument,
            document.0.confidence >= policy.documentHighConfidence,
            !document.1.frameLikeRisk,
            !document.1.hasSoftShapeRisk,
-           validRectangles.isEmpty {
+           (validRectangles.isEmpty
+                || (mode == .still && documentContainsSubstructure(
+                    document,
+                    rectangles: validRectangles
+                ))) {
             return .selected(RectangleSelection(
                 candidate: document.0,
                 evidence: .highConfidenceDocument
@@ -687,6 +798,42 @@ struct RectangleResolver {
         }.max { $0.1 < $1.1 }?.0
     }
 
+    private func documentContainsSubstructure(
+        _ document: (RectangleCandidate, RectangleValidation),
+        rectangles: [(RectangleCandidate, RectangleValidation)]
+    ) -> Bool {
+        rectangles.contains { candidate, validation in
+            validation.polygonArea >= max(0.02, document.1.polygonArea * 0.08)
+                && validation.polygonArea <= document.1.polygonArea * 0.92
+                && !validation.frameLikeRisk
+                && RectangleGeometry.contains(
+                    document.0.quadrilateral,
+                    candidate.quadrilateral,
+                    tolerance: 0.025
+                )
+        }
+    }
+
+    private func enclosingRectangle(
+        around document: (RectangleCandidate, RectangleValidation),
+        rectangles: [(RectangleCandidate, RectangleValidation)]
+    ) -> RectangleCandidate? {
+        rectangles.filter { candidate, validation in
+            validation.polygonArea >= max(0.08, document.1.polygonArea * 1.08)
+                && !validation.frameLikeRisk
+                && RectangleGeometry.contains(
+                    candidate.quadrilateral,
+                    document.0.quadrilateral,
+                    tolerance: 0.025
+                )
+        }.sorted { lhs, rhs in
+            if abs(lhs.1.polygonArea - rhs.1.polygonArea) > 0.000_001 {
+                return lhs.1.polygonArea > rhs.1.polygonArea
+            }
+            return lhs.0.originalIndex < rhs.0.originalIndex
+        }.first?.0
+    }
+
     private func acquireRectangle(
         _ rectangles: [(RectangleCandidate, RectangleValidation)],
         imageSize: CGSize,
@@ -782,11 +929,10 @@ struct RectangleResolver {
         }
         return ordered.reduce(into: []) { result, entry in
             let duplicatesExistingTarget = result.contains { existing in
-                RectangleGeometry.isSameTarget(
+                RectangleGeometry.isDuplicateObservation(
                     existing.0.quadrilateral,
                     entry.0.quadrilateral,
-                    imageSize: imageSize,
-                    policy: policy
+                    imageSize: imageSize
                 )
             }
             if !duplicatesExistingTarget { result.append(entry) }

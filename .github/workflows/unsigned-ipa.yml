@@ -22,8 +22,8 @@ jobs:
       APP_NAME: LectureScan
       DERIVED_DATA: ${{ github.workspace }}/build/DerivedData
       ARTIFACT_DIR: ${{ github.workspace }}/build/artifacts
-      DOWNLOAD_URL: https://github.com/nmt3325/LectureScan/releases/download/nightly/LectureScan-unsigned.ipa
-      SOURCE_URL: https://github.com/nmt3325/LectureScan/releases/download/nightly/altstore-source.json
+      SOURCE_BRANCH: altstore-source
+      SOURCE_URL: https://raw.githubusercontent.com/nmt3325/LectureScan/altstore-source/altstore-source.json
 
     steps:
       - name: Check out repository
@@ -50,10 +50,15 @@ jobs:
             -configuration Release \
             -showBuildSettings | awk '/ MARKETING_VERSION = / { print $3; exit }')
           test -n "$version"
+
+          immutable_ipa_name="$APP_NAME-unsigned-$GITHUB_RUN_NUMBER-$GITHUB_RUN_ID.ipa"
+          download_url="https://github.com/$GITHUB_REPOSITORY/releases/download/nightly/$immutable_ipa_name"
           {
             echo "MARKETING_VERSION=$version"
             echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER"
             echo "RELEASED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "IMMUTABLE_IPA_NAME=$immutable_ipa_name"
+            echo "DOWNLOAD_URL=$download_url"
           } >> "$GITHUB_ENV"
 
       - name: Build unsigned app for iPhoneOS
@@ -96,6 +101,7 @@ jobs:
             /usr/bin/zip -qry "$ipa_path" Payload
             /usr/bin/shasum -a 256 "$APP_NAME-unsigned.ipa" > "$APP_NAME-unsigned.ipa.sha256"
           )
+          cp "$ipa_path" "$ARTIFACT_DIR/$IMMUTABLE_IPA_NAME"
           /usr/bin/unzip -t "$ipa_path"
           echo "IPA_SIZE=$(stat -f%z "$ipa_path")" >> "$GITHUB_ENV"
 
@@ -137,6 +143,8 @@ jobs:
 
           - Version: $MARKETING_VERSION ($BUILD_NUMBER)
           - AltStore / SideStore / LiveContainer source: $SOURCE_URL
+          - Source-selected immutable IPA: $DOWNLOAD_URL
+          - The canonical LectureScan-unsigned.ipa is also replaced for manual downloads.
           - The IPA is unsigned and intended for re-signing or LiveContainer import.
           EOF
 
@@ -158,6 +166,81 @@ jobs:
           gh release upload nightly \
             "$ARTIFACT_DIR/LectureScan-unsigned.ipa" \
             "$ARTIFACT_DIR/LectureScan-unsigned.ipa.sha256" \
+            "$ARTIFACT_DIR/$IMMUTABLE_IPA_NAME" \
             "$ARTIFACT_DIR/altstore-source.json" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
+
+          gh release view nightly \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name' > "$ARTIFACT_DIR/release-assets.txt"
+          grep -Fx "$IMMUTABLE_IPA_NAME" "$ARTIFACT_DIR/release-assets.txt"
+
+      - name: Publish fixed AltStore source URL
+        run: |
+          set -euo pipefail
+
+          parent=""
+          if git ls-remote --exit-code --heads origin "$SOURCE_BRANCH" >/dev/null 2>&1; then
+            git fetch --no-tags origin "refs/heads/$SOURCE_BRANCH"
+            parent=$(git rev-parse FETCH_HEAD)
+          fi
+
+          blob=$(git hash-object -w "$ARTIFACT_DIR/altstore-source.json")
+          tree=$(printf '100644 blob %s\taltstore-source.json\n' "$blob" | git mktree)
+          message="Update AltStore source for build $BUILD_NUMBER ($GITHUB_SHA)"
+
+          export GIT_AUTHOR_NAME='github-actions[bot]'
+          export GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com'
+          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          export GIT_AUTHOR_DATE="$RELEASED_AT"
+          export GIT_COMMITTER_DATE="$RELEASED_AT"
+
+          if [[ -n "$parent" ]]; then
+            source_commit=$(printf '%s\n' "$message" | git commit-tree "$tree" -p "$parent")
+          else
+            source_commit=$(printf '%s\n' "$message" | git commit-tree "$tree")
+          fi
+          git push origin "$source_commit:refs/heads/$SOURCE_BRANCH"
+          echo "SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
+
+      - name: Verify fixed source selects this build
+        run: |
+          set -euo pipefail
+          published_source="$ARTIFACT_DIR/published-altstore-source.json"
+          verified=false
+
+          for attempt in {1..12}; do
+            if curl -fsSL \
+              -H 'Cache-Control: no-cache' \
+              "$SOURCE_URL?run=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$attempt" \
+              -o "$published_source" \
+              && python3 - "$published_source" "$DOWNLOAD_URL" "$BUILD_NUMBER" "$GITHUB_SHA" <<'PY'
+          import json
+          import sys
+
+          source_path, expected_url, expected_build, expected_commit = sys.argv[1:]
+          with open(source_path, encoding="utf-8") as handle:
+              source = json.load(handle)
+          app = source["apps"][0]
+          version = app["versions"][0]
+          assert app["downloadURL"] == expected_url
+          assert version["downloadURL"] == expected_url
+          assert version["buildNumber"] == expected_build
+          assert expected_commit[:7] in version["localizedDescription"]
+          PY
+            then
+              verified=true
+              break
+            fi
+            sleep 5
+          done
+
+          if [[ "$verified" != true ]]; then
+            echo "::error::The fixed source URL did not publish this workflow's immutable IPA."
+            exit 1
+          fi
+          echo "Published source commit: $SOURCE_COMMIT"
+          echo "Published immutable IPA: $DOWNLOAD_URL"
