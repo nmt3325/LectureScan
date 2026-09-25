@@ -43,6 +43,22 @@ final class DocumentProcessorTests: XCTestCase {
         XCTAssertLessThan(result.image.size.height, 600)
     }
 
+    func testCameraZoomRangeClampsToDeviceLimits() {
+        let range = CameraZoomRange(minimum: 1, maximum: 8)
+
+        XCTAssertEqual(range.clamped(0.5), 1, accuracy: 0.0001)
+        XCTAssertEqual(range.clamped(3.25), 3.25, accuracy: 0.0001)
+        XCTAssertEqual(range.clamped(12), 8, accuracy: 0.0001)
+    }
+
+    func testCameraZoomRangeNormalizesInvalidMaximum() {
+        let range = CameraZoomRange(minimum: 2, maximum: 1)
+
+        XCTAssertEqual(range.minimum, 2, accuracy: 0.0001)
+        XCTAssertEqual(range.maximum, 2, accuracy: 0.0001)
+        XCTAssertEqual(range.clamped(1), 2, accuracy: 0.0001)
+    }
+
     func testApproximateArea() {
         let rectangle = DetectedQuadrilateral(
             topLeft: CGPoint(x: 0, y: 1),

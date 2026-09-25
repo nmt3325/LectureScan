@@ -5,19 +5,27 @@ import UIKit
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
     let quadrilateral: DetectedQuadrilateral?
+    let zoomFactor: CGFloat
+    let zoomRange: CameraZoomRange
     let onFocus: (CGPoint) -> Void
+    let onZoom: (CGFloat) -> Void
 
     func makeUIView(context: Context) -> PreviewSurface {
         let view = PreviewSurface()
         view.configure(session: session)
         view.onFocus = onFocus
+        view.onZoom = onZoom
+        view.update(quadrilateral: quadrilateral)
+        view.updateZoom(factor: zoomFactor, range: zoomRange)
         return view
     }
 
     func updateUIView(_ uiView: PreviewSurface, context: Context) {
         uiView.configure(session: session)
         uiView.onFocus = onFocus
+        uiView.onZoom = onZoom
         uiView.update(quadrilateral: quadrilateral)
+        uiView.updateZoom(factor: zoomFactor, range: zoomRange)
     }
 }
 
@@ -29,10 +37,15 @@ final class PreviewSurface: UIView {
     }
 
     var onFocus: ((CGPoint) -> Void)?
+    var onZoom: ((CGFloat) -> Void)?
 
     private let quadrilateralLayer = CAShapeLayer()
     private let focusLayer = CAShapeLayer()
     private var quadrilateral: DetectedQuadrilateral?
+    private var zoomFactor: CGFloat = 1
+    private var zoomRange = CameraZoomRange(minimum: 1, maximum: 1)
+    private var pinchStartZoomFactor: CGFloat = 1
+    private var rotationStartZoomFactor: CGFloat = 1
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -56,6 +69,8 @@ final class PreviewSurface: UIView {
         layer.addSublayer(focusLayer)
 
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(didTap(_:))))
+        addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(didPinch(_:))))
+        addGestureRecognizer(UIRotationGestureRecognizer(target: self, action: #selector(didRotate(_:))))
     }
 
     required init?(coder: NSCoder) {
@@ -75,6 +90,11 @@ final class PreviewSurface: UIView {
     func update(quadrilateral: DetectedQuadrilateral?) {
         self.quadrilateral = quadrilateral
         setNeedsLayout()
+    }
+
+    func updateZoom(factor: CGFloat, range: CameraZoomRange) {
+        zoomRange = range
+        zoomFactor = range.clamped(factor)
     }
 
     override func layoutSubviews() {
@@ -109,6 +129,35 @@ final class PreviewSurface: UIView {
         let devicePoint = previewLayer.captureDevicePointConverted(fromLayerPoint: point)
         onFocus?(devicePoint)
         showFocusRing(at: point)
+    }
+
+    @objc private func didPinch(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            pinchStartZoomFactor = zoomFactor
+        case .changed, .ended:
+            let targetFactor = zoomRange.clamped(pinchStartZoomFactor * gesture.scale)
+            zoomFactor = targetFactor
+            onZoom?(targetFactor)
+        default:
+            break
+        }
+    }
+
+    @objc private func didRotate(_ gesture: UIRotationGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            rotationStartZoomFactor = zoomFactor
+        case .changed, .ended:
+            let radiansPerDoubling = CGFloat.pi / 3
+            let octaves = gesture.rotation / radiansPerDoubling
+            let multiplier = CGFloat(pow(2, Double(octaves)))
+            let targetFactor = zoomRange.clamped(rotationStartZoomFactor * multiplier)
+            zoomFactor = targetFactor
+            onZoom?(targetFactor)
+        default:
+            break
+        }
     }
 
     private func showFocusRing(at point: CGPoint) {

@@ -24,6 +24,21 @@ enum CameraAuthorizationState: Equatable {
     case unavailable(String)
 }
 
+struct CameraZoomRange: Equatable {
+    let minimum: CGFloat
+    let maximum: CGFloat
+
+    init(minimum: CGFloat, maximum: CGFloat) {
+        let safeMinimum = max(minimum, 0.01)
+        self.minimum = safeMinimum
+        self.maximum = max(maximum, safeMinimum)
+    }
+
+    func clamped(_ factor: CGFloat) -> CGFloat {
+        min(max(factor, minimum), maximum)
+    }
+}
+
 enum SilentCaptureMethod: Equatable {
     case preparing
     case publicPhotoSuppression

@@ -14,6 +14,8 @@ final class CameraModel: NSObject, ObservableObject {
     @Published private(set) var isReady = false
     @Published private(set) var isCapturing = false
     @Published private(set) var isTorchOn = false
+    @Published private(set) var zoomFactor: CGFloat = 1
+    @Published private(set) var zoomRange = CameraZoomRange(minimum: 1, maximum: 1)
     @Published private(set) var silentCaptureMethod: SilentCaptureMethod = .preparing
 
     private let sessionQueue = DispatchQueue(label: "dev.nmt3325.LectureScan.session", qos: .userInitiated)
@@ -135,6 +137,44 @@ final class CameraModel: NSObject, ObservableObject {
         }
     }
 
+    func setZoomFactor(_ requestedFactor: CGFloat) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.videoDevice else { return }
+            let range = self.availableZoomRange(for: device)
+            let displayMultiplier = self.displayZoomFactorMultiplier(for: device)
+            let targetDisplayFactor = range.clamped(requestedFactor)
+            let targetHardwareFactor = min(
+                max(targetDisplayFactor / displayMultiplier, device.minAvailableVideoZoomFactor),
+                device.maxAvailableVideoZoomFactor
+            )
+
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+
+                device.videoZoomFactor = targetHardwareFactor
+                let appliedDisplayFactor = range.clamped(
+                    device.videoZoomFactor * displayMultiplier
+                )
+
+                self.publish {
+                    self.zoomRange = range
+                    self.zoomFactor = appliedDisplayFactor
+                }
+            } catch {
+                self.failZoom(error.localizedDescription)
+            }
+        }
+    }
+
+    func changeZoom(by delta: CGFloat) {
+        setZoomFactor(zoomRange.clamped(zoomFactor + delta))
+    }
+
+    func resetZoom() {
+        setZoomFactor(zoomRange.clamped(1))
+    }
+
     func toggleTorch() {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.videoDevice, device.hasTorch else { return }
@@ -200,6 +240,15 @@ final class CameraModel: NSObject, ObservableObject {
         }
         videoDevice = device
 
+        let initialZoomRange = availableZoomRange(for: device)
+        let initialZoomFactor = initialZoomRange.clamped(
+            device.videoZoomFactor * displayZoomFactorMultiplier(for: device)
+        )
+        publish {
+            self.zoomRange = initialZoomRange
+            self.zoomFactor = initialZoomFactor
+        }
+
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else {
             throw CameraConfigurationError.cannotAddInput
@@ -230,6 +279,25 @@ final class CameraModel: NSObject, ObservableObject {
 
         applyPortraitRotation(to: videoOutput.connection(with: .video))
         applyPortraitRotation(to: photoOutput.connection(with: .video))
+    }
+
+    private func availableZoomRange(for device: AVCaptureDevice) -> CameraZoomRange {
+        let qualityZoomLimit: CGFloat = 8
+        let displayMultiplier = displayZoomFactorMultiplier(for: device)
+        return CameraZoomRange(
+            minimum: device.minAvailableVideoZoomFactor * displayMultiplier,
+            maximum: min(
+                device.maxAvailableVideoZoomFactor * displayMultiplier,
+                qualityZoomLimit
+            )
+        )
+    }
+
+    private func displayZoomFactorMultiplier(for device: AVCaptureDevice) -> CGFloat {
+        if #available(iOS 18.0, *) {
+            return max(device.displayVideoZoomFactorMultiplier, 0.01)
+        }
+        return 1
     }
 
     private func applyPortraitRotation(to connection: AVCaptureConnection?) {
@@ -316,6 +384,19 @@ final class CameraModel: NSObject, ObservableObject {
                 CaptureNotice(
                     kind: .error,
                     title: "撮影できませんでした",
+                    detail: message
+                )
+            )
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    private func failZoom(_ message: String) {
+        publish {
+            self.showNotice(
+                CaptureNotice(
+                    kind: .error,
+                    title: "ズームを変更できませんでした",
                     detail: message
                 )
             )
