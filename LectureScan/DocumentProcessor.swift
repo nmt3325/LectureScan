@@ -60,7 +60,7 @@ final class DocumentProcessor {
         let rectangleRequest: VNDetectRectanglesRequest? = {
             guard requestSet == .rectangle || requestSet == .dual else { return nil }
             let request = VNDetectRectanglesRequest()
-            request.maximumObservations = 6
+            request.maximumObservations = 15
             request.minimumConfidence = 0.55
             request.minimumSize = 0.16
             request.minimumAspectRatio = 0.22

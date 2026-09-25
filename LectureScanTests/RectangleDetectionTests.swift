@@ -76,6 +76,143 @@ final class RectangleResolverTests: XCTestCase {
         XCTAssertEqual(resolution, .abstain(.detectorDisagreement))
     }
 
+    func testClearlyLargestRectangleBeatsHigherRankedCenteredSmallRectangle() throws {
+        let smallCentered = candidate(
+            quadrilateral(left: 0.35, bottom: 0.32, right: 0.65, top: 0.68),
+            detector: .rectangle,
+            index: 0
+        )
+        let largeWide = candidate(
+            quadrilateral(left: 0.02, bottom: 0.34, right: 0.98, top: 0.60),
+            detector: .rectangle,
+            index: 1
+        )
+
+        let selection = try XCTUnwrap(resolver.resolve(
+            batch(rectangles: [smallCentered, largeWide]),
+            prior: nil,
+            mode: .still
+        ).selection)
+
+        XCTAssertEqual(selection.evidence, .rectangleAcquisition)
+        XCTAssertEqual(selection.candidate, largeWide)
+        XCTAssertGreaterThan(
+            largeWide.quadrilateral.approximateArea,
+            smallCentered.quadrilateral.approximateArea * 2
+        )
+    }
+
+    func testClearlyLargestRectangleOverridesSmallCrossDetectorConsensus() throws {
+        let smallTarget = quadrilateral(
+            left: 0.37,
+            bottom: 0.35,
+            right: 0.63,
+            top: 0.65
+        )
+        let document = candidate(
+            smallTarget,
+            detector: .documentSegmentation,
+            confidence: 0.80
+        )
+        let agreeingSmallRectangle = candidate(
+            quadrilateral(left: 0.36, bottom: 0.34, right: 0.64, top: 0.66),
+            detector: .rectangle,
+            index: 0
+        )
+        let largeMainRectangle = candidate(
+            quadrilateral(left: 0.04, bottom: 0.25, right: 0.96, top: 0.62),
+            detector: .rectangle,
+            index: 1
+        )
+
+        let selection = try XCTUnwrap(resolver.resolve(
+            batch(
+                document: document,
+                rectangles: [agreeingSmallRectangle, largeMainRectangle]
+            ),
+            prior: nil,
+            mode: .still
+        ).selection)
+
+        XCTAssertEqual(selection.evidence, .largestAreaPreference)
+        XCTAssertEqual(selection.candidate, largeMainRectangle)
+    }
+
+    func testClearlyLargestRectangleOverridesTrackedSmallRectangle() throws {
+        let smallTracked = candidate(
+            quadrilateral(left: 0.36, bottom: 0.34, right: 0.64, top: 0.66),
+            detector: .rectangle,
+            index: 0
+        )
+        let largeMainRectangle = candidate(
+            quadrilateral(left: 0.04, bottom: 0.25, right: 0.96, top: 0.62),
+            detector: .rectangle,
+            index: 1
+        )
+        let prior = RectanglePrior(
+            quadrilateral: smallTracked.quadrilateral,
+            detector: .rectangle
+        )
+
+        let selection = try XCTUnwrap(resolver.resolve(
+            batch(rectangles: [smallTracked, largeMainRectangle]),
+            prior: prior,
+            mode: .liveTracking
+        ).selection)
+
+        XCTAssertEqual(selection.evidence, .largestAreaPreference)
+        XCTAssertEqual(selection.candidate, largeMainRectangle)
+    }
+
+    func testComparableLargerRectangleDoesNotOverrideDocumentConsensus() throws {
+        let target = quadrilateral(left: 0.25, bottom: 0.25, right: 0.75, top: 0.75)
+        let document = candidate(
+            target,
+            detector: .documentSegmentation,
+            confidence: 0.70
+        )
+        let agreeingRectangle = candidate(
+            quadrilateral(left: 0.26, bottom: 0.24, right: 0.74, top: 0.76),
+            detector: .rectangle,
+            index: 0
+        )
+        let onlySlightlyLarger = candidate(
+            quadrilateral(left: 0.02, bottom: 0.30, right: 0.98, top: 0.62),
+            detector: .rectangle,
+            index: 1
+        )
+
+        let selection = try XCTUnwrap(resolver.resolve(
+            batch(document: document, rectangles: [agreeingRectangle, onlySlightlyLarger]),
+            prior: nil,
+            mode: .still
+        ).selection)
+
+        XCTAssertEqual(selection.evidence, .crossDetectorConsensus)
+        XCTAssertEqual(selection.candidate, document)
+    }
+
+    func testFrameLikeLargestRectangleIsRejectedBeforeAreaPreference() throws {
+        let frameLike = candidate(
+            DetectedQuadrilateral.fullFrame(inset: 0.004),
+            detector: .rectangle,
+            index: 0
+        )
+        let mainRectangle = candidate(
+            quadrilateral(left: 0.10, bottom: 0.24, right: 0.90, top: 0.66),
+            detector: .rectangle,
+            index: 1
+        )
+
+        let selection = try XCTUnwrap(resolver.resolve(
+            batch(rectangles: [frameLike, mainRectangle]),
+            prior: nil,
+            mode: .still
+        ).selection)
+
+        XCTAssertEqual(selection.candidate, mainRectangle)
+    }
+
     func testPriorAssociationWinsOverRectangleRank() throws {
         let distractor = candidate(
             quadrilateral(left: 0.06, bottom: 0.10, right: 0.44, top: 0.88),
@@ -254,6 +391,37 @@ final class LiveRectangleTrackerTests: XCTestCase {
         XCTAssertTrue(switched.didChangeTarget)
         XCTAssertEqual(switched.rawTrustedCandidate, secondTarget)
         XCTAssertEqual(switched.displayedQuadrilateral, secondTarget.quadrilateral)
+    }
+
+    func testLargerTargetRequiresTwoFramesBeforeReplacingSmallLock() {
+        var tracker = LiveRectangleTracker()
+        let small = candidate(
+            quadrilateral(left: 0.36, bottom: 0.34, right: 0.64, top: 0.66)
+        )
+        let large = RectangleCandidate(
+            quadrilateral: quadrilateral(left: 0.04, bottom: 0.25, right: 0.96, top: 0.62),
+            detector: .rectangle,
+            confidence: 1,
+            originalIndex: 1
+        )
+        let combined = RectangleCandidateBatch(
+            sourceSize: imageSize,
+            detectionSize: imageSize,
+            document: nil,
+            rectangles: [small, large]
+        )
+
+        _ = tracker.consume(batch(small), at: 0)
+        _ = tracker.consume(batch(small), at: 0.10)
+        let pending = tracker.consume(combined, at: 0.20)
+        let switched = tracker.consume(combined, at: 0.30)
+
+        XCTAssertEqual(pending.state, .ambiguous)
+        XCTAssertEqual(pending.displayedQuadrilateral, small.quadrilateral)
+        XCTAssertEqual(switched.state, .rectangleLocked)
+        XCTAssertEqual(switched.rawTrustedCandidate, large)
+        XCTAssertTrue(switched.didChangeTarget)
+        XCTAssertEqual(switched.displayedQuadrilateral, large.quadrilateral)
     }
 
     func testSchedulerUsesDualProbeForRectangleLock() {
@@ -566,14 +734,28 @@ final class RectangleDetectionIntegrationTests: XCTestCase {
                 prior: nil,
                 mode: .still
             )
-            if name == "paper_with_larger_distractor" {
+            switch name {
+            case "blackboard_wide":
+                let selection = try XCTUnwrap(
+                    resolution.selection,
+                    "The largest non-frame-like board candidate should be selected"
+                )
+                XCTAssertEqual(selection.candidate.detector, .rectangle)
+                XCTAssertEqual(selection.candidate.originalIndex, 0)
+                assertGood(selection.candidate.quadrilateral, expected: fixture.expected)
+            case "paper_small_distant":
+                XCTAssertNil(
+                    resolution.selection,
+                    "Several similarly sized non-paper candidates must remain ambiguous"
+                )
+            case "paper_with_larger_distractor":
                 let selected = try XCTUnwrap(
                     resolution.selection?.candidate.quadrilateral,
-                    "The document/second-rectangle consensus must beat the larger distractor"
+                    "The document/second-rectangle consensus must beat a near-size distractor"
                 )
                 assertGood(selected, expected: fixture.expected)
-            } else {
-                assertAcceptableOrAbstained(resolution, expected: fixture.expected)
+            default:
+                XCTFail("Unhandled fixture: \(name)")
             }
         }
     }

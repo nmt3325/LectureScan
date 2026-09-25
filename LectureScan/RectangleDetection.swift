@@ -45,6 +45,7 @@ enum RectangleSelectionEvidence: Equatable {
     case priorAssociation
     case crossDetectorConsensus
     case highConfidenceDocument
+    case largestAreaPreference
     case rectangleAcquisition
 }
 
@@ -95,6 +96,10 @@ struct RectangleDetectionPolicy {
     let associationMinimumAreaRatio: CGFloat
     let acquisitionMinimumScore: CGFloat
     let acquisitionMinimumMargin: CGFloat
+    let acquisitionMinimumAreaRatioToLargest: CGFloat
+    let largestRectangleDominanceRatio: CGFloat
+    let largestRectangleOverrideRatio: CGFloat
+    let largestRectangleOverrideMinimumArea: CGFloat
     let singleRequestSpacing: CFTimeInterval
     let dualRequestSpacing: CFTimeInterval
     let minimumPostCompletionGap: CFTimeInterval
@@ -131,6 +136,10 @@ struct RectangleDetectionPolicy {
         associationMinimumAreaRatio: 0.50,
         acquisitionMinimumScore: 0.55,
         acquisitionMinimumMargin: 0.12,
+        acquisitionMinimumAreaRatioToLargest: 0.70,
+        largestRectangleDominanceRatio: 1.25,
+        largestRectangleOverrideRatio: 1.50,
+        largestRectangleOverrideMinimumArea: 0.14,
         singleRequestSpacing: 0.10,
         dualRequestSpacing: 0.12,
         minimumPostCompletionGap: 0.02,
@@ -480,6 +489,10 @@ struct RectangleResolver {
         let validRectangles = rectangleEntries.filter { $0.1.isHardValid }
         let validDocument = documentEntry.flatMap { $0.1.isHardValid ? $0 : nil }
         let hasAnyCandidate = batch.document != nil || !batch.rectangles.isEmpty
+        let usableRectangles = validRectangles.filter {
+            !$0.1.frameLikeRisk && (mode != .still || !$0.1.hasSoftShapeRisk)
+        }
+        let strictAreaRectangles = usableRectangles.filter { !$0.1.hasSoftShapeRisk }
 
         if let prior {
             let entries = ([validDocument].compactMap { $0 } + validRectangles)
@@ -505,6 +518,17 @@ struct RectangleResolver {
                 return lhs.0.originalIndex < rhs.0.originalIndex
             }
             if let best = associated.first {
+                if let largest = dominantLargestRectangle(
+                    strictAreaRectangles,
+                    comparedTo: best.1,
+                    imageSize: batch.detectionSize,
+                    totalCount: batch.rectangles.count
+                ) {
+                    return .selected(RectangleSelection(
+                        candidate: largest,
+                        evidence: .largestAreaPreference
+                    ))
+                }
                 if best.0.detector == .documentSegmentation,
                    (best.1.frameLikeRisk || best.1.hasSoftShapeRisk),
                    let rectangle = associated.first(where: { $0.0.detector == .rectangle }) {
@@ -532,8 +556,20 @@ struct RectangleResolver {
             rectangles: validRectangles,
             imageSize: batch.detectionSize
            ) {
+            let consensus = document.1.hasSoftShapeRisk ? agreement : document
+            if let largest = dominantLargestRectangle(
+                strictAreaRectangles,
+                comparedTo: consensus.1,
+                imageSize: batch.detectionSize,
+                totalCount: batch.rectangles.count
+            ) {
+                return .selected(RectangleSelection(
+                    candidate: largest,
+                    evidence: .largestAreaPreference
+                ))
+            }
             return .selected(RectangleSelection(
-                candidate: document.1.hasSoftShapeRisk ? agreement.0 : document.0,
+                candidate: consensus.0,
                 evidence: .crossDetectorConsensus
             ))
         }
@@ -553,12 +589,24 @@ struct RectangleResolver {
         // rectangle detector is ambiguity, not permission to choose a rectangle
         // independently. Frame-like and low-confidence document observations do
         // not block the rectangle fallback because they are weak evidence.
+        if let document = validDocument,
+           document.0.confidence >= policy.documentMediumConfidence,
+           !document.1.frameLikeRisk,
+           let largest = dominantLargestRectangle(
+            strictAreaRectangles,
+            comparedTo: document.1,
+            imageSize: batch.detectionSize,
+            totalCount: batch.rectangles.count
+           ) {
+            return .selected(RectangleSelection(
+                candidate: largest,
+                evidence: .largestAreaPreference
+            ))
+        }
+
         let documentBlocksIndependentAcquisition = validDocument.map {
             $0.0.confidence >= policy.documentMediumConfidence && !$0.1.frameLikeRisk
         } ?? false
-        let usableRectangles = validRectangles.filter {
-            !$0.1.frameLikeRisk && (mode != .still || !$0.1.hasSoftShapeRisk)
-        }
         if !documentBlocksIndependentAcquisition,
            let acquisition = acquireRectangle(
             usableRectangles,
@@ -644,45 +692,133 @@ struct RectangleResolver {
         imageSize: CGSize,
         totalCount: Int
     ) -> RectangleCandidate? {
-        let ranked = rectangles.map { entry in
-            (entry.0, acquisitionScore(
+        let distinctTargets = distinctRectangleTargets(rectangles, imageSize: imageSize)
+        guard let maximumArea = distinctTargets.map({ $0.1.polygonArea }).max() else {
+            return nil
+        }
+
+        if let dominant = dominantLargestRectangle(
+            distinctTargets.filter { !$0.1.hasSoftShapeRisk },
+            comparedTo: nil,
+            imageSize: imageSize,
+            totalCount: totalCount
+        ) {
+            return dominant
+        }
+
+        let areaTier = distinctTargets.filter {
+            $0.1.polygonArea >= maximumArea * policy.acquisitionMinimumAreaRatioToLargest
+        }
+        let ranked = areaTier.map { entry in
+            (entry.0, entry.1, acquisitionScore(
                 candidate: entry.0,
                 validation: entry.1,
+                maximumArea: maximumArea,
                 imageSize: imageSize,
                 totalCount: totalCount
             ))
         }.sorted { lhs, rhs in
-            if abs(lhs.1 - rhs.1) > 0.000_001 { return lhs.1 > rhs.1 }
+            if abs(lhs.2 - rhs.2) > 0.000_001 { return lhs.2 > rhs.2 }
+            if abs(lhs.1.polygonArea - rhs.1.polygonArea) > 0.000_001 {
+                return lhs.1.polygonArea > rhs.1.polygonArea
+            }
             return lhs.0.originalIndex < rhs.0.originalIndex
         }
-        guard let best = ranked.first, best.1 >= policy.acquisitionMinimumScore else {
+        guard let best = ranked.first, best.2 >= policy.acquisitionMinimumScore else {
             return nil
         }
         if ranked.count > 1,
-           best.1 - ranked[1].1 < policy.acquisitionMinimumMargin {
+           best.2 - ranked[1].2 < policy.acquisitionMinimumMargin {
             return nil
         }
         return best.0
     }
 
+    /// Returns the largest geometrically safe rectangle only when it is clearly
+    /// larger than every other distinct target. When replacing document or prior
+    /// evidence, the candidate must also cover enough of the frame and exceed the
+    /// referenced target by a larger ratio. This keeps a near-tie ambiguous while
+    /// preventing a centered, high-ranked small rectangle from winning.
+    private func dominantLargestRectangle(
+        _ rectangles: [(RectangleCandidate, RectangleValidation)],
+        comparedTo reference: RectangleValidation?,
+        imageSize: CGSize,
+        totalCount: Int
+    ) -> RectangleCandidate? {
+        let targets = distinctRectangleTargets(rectangles, imageSize: imageSize)
+        guard let best = targets.first else { return nil }
+        let bestArea = best.1.polygonArea
+
+        if targets.count > 1,
+           bestArea < targets[1].1.polygonArea * policy.largestRectangleDominanceRatio {
+            return nil
+        }
+        if let reference {
+            guard bestArea >= policy.largestRectangleOverrideMinimumArea,
+                  bestArea >= reference.polygonArea * policy.largestRectangleOverrideRatio else {
+                return nil
+            }
+        }
+        let score = acquisitionScore(
+            candidate: best.0,
+            validation: best.1,
+            maximumArea: bestArea,
+            imageSize: imageSize,
+            totalCount: totalCount
+        )
+        guard score >= policy.acquisitionMinimumScore else { return nil }
+        return best.0
+    }
+
+    private func distinctRectangleTargets(
+        _ rectangles: [(RectangleCandidate, RectangleValidation)],
+        imageSize: CGSize
+    ) -> [(RectangleCandidate, RectangleValidation)] {
+        let ordered = rectangles.sorted { lhs, rhs in
+            if abs(lhs.1.polygonArea - rhs.1.polygonArea) > 0.000_001 {
+                return lhs.1.polygonArea > rhs.1.polygonArea
+            }
+            return lhs.0.originalIndex < rhs.0.originalIndex
+        }
+        return ordered.reduce(into: []) { result, entry in
+            let duplicatesExistingTarget = result.contains { existing in
+                RectangleGeometry.isSameTarget(
+                    existing.0.quadrilateral,
+                    entry.0.quadrilateral,
+                    imageSize: imageSize,
+                    policy: policy
+                )
+            }
+            if !duplicatesExistingTarget { result.append(entry) }
+        }
+    }
+
     private func acquisitionScore(
         candidate: RectangleCandidate,
         validation: RectangleValidation,
+        maximumArea: CGFloat,
         imageSize: CGSize,
         totalCount: Int
     ) -> CGFloat {
         let edgeRatio = validation.minimumEdgePixels / max(min(imageSize.width, imageSize.height), 1)
         let sizeUtility = smoothstep(0.08, 0.25, edgeRatio)
+        let relativeAreaUtility = min(max(
+            validation.polygonArea / max(maximumArea, 0.000_001), 0
+        ), 1)
+        let absoluteAreaUtility = smoothstep(0.03, 0.40, validation.polygonArea)
         let fillUtility = min(max(
             (validation.fillRatio - policy.softMinimumFillRatio)
                 / (1 - policy.softMinimumFillRatio), 0
         ), 1)
-        let rankUtility = 1 - CGFloat(candidate.originalIndex) / CGFloat(max(totalCount - 1, 1))
+        let rankUtility = min(max(
+            1 - CGFloat(candidate.originalIndex) / CGFloat(max(totalCount - 1, 1)), 0
+        ), 1)
         let center = RectangleGeometry.centroid(candidate.quadrilateral)
         let centerDistance = hypot(center.x - 0.5, center.y - 0.5) / sqrt(0.5)
         let centerUtility = 1 - min(max(centerDistance, 0), 1)
-        return 0.45 * sizeUtility + 0.30 * fillUtility
-            + 0.15 * rankUtility + 0.10 * centerUtility
+        return 0.35 * relativeAreaUtility + 0.25 * absoluteAreaUtility
+            + 0.15 * sizeUtility + 0.10 * fillUtility
+            + 0.05 * rankUtility + 0.10 * centerUtility
     }
 
     private func smoothstep(_ lower: CGFloat, _ upper: CGFloat, _ value: CGFloat) -> CGFloat {

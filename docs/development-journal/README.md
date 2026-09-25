@@ -35,6 +35,7 @@ LectureScanの変更理由と検証証拠を、コミット単位で残すため
 | 2026-09-25 | `5ce69dc` | Actions Node 24移行 | [Node 24 actions](2026-09-25-5ce69dc-node24-actions.md) |
 | 2026-09-25 | `7600c36` | 安全な矩形検出と追跡 | [Safe rectangle detection](2026-09-25-7600c36-safe-rectangle-detection.md) |
 | 2026-09-25 | この書記を含むコミット | 書記制度の導入 | [Documentation policy](2026-09-25-documentation-policy.md) |
+| 2026-09-25 | この書記を含むコミット | 最大の安全な矩形を優先 | [Largest rectangle priority](2026-09-25-largest-rectangle-priority.md) |
 
 ## 新規作成
 
