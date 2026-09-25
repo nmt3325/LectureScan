@@ -3,6 +3,7 @@ import UIKit
 
 struct CameraScreen: View {
     @ObservedObject var camera: CameraModel
+    @State private var cropEditorCapture: EditableCapture?
 
     var body: some View {
         ZStack {
@@ -23,6 +24,14 @@ struct CameraScreen: View {
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
         .onAppear { camera.start() }
+        .onChange(of: camera.editableCapture?.id) { previousID, newID in
+            guard let newID, newID != previousID,
+                  let capture = camera.editableCapture else { return }
+            cropEditorCapture = capture
+        }
+        .fullScreenCover(item: $cropEditorCapture) { capture in
+            CropEditorScreen(camera: camera, capture: capture)
+        }
     }
 
     private var cameraView: some View {
@@ -61,7 +70,7 @@ struct CameraScreen: View {
 
                 zoomControls
 
-                Text("倍率をタップ／スライド、またはプレビューを2本指で回転・ピンチしてズーム")
+                Text("倍率を操作してズーム。撮影後は四隅をドラッグして切り抜きを修正できます")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.white.opacity(0.88))
                     .multilineTextAlignment(.center)
@@ -128,7 +137,9 @@ struct CameraScreen: View {
         ZStack {
             HStack {
                 if let image = camera.lastImage {
-                    Button(action: camera.copyLastImage) {
+                    Button {
+                        cropEditorCapture = camera.editableCapture
+                    } label: {
                         ZStack(alignment: .bottomTrailing) {
                             Image(uiImage: image)
                                 .resizable()
@@ -140,7 +151,7 @@ struct CameraScreen: View {
                                         .stroke(.white.opacity(0.8), lineWidth: 1)
                                 }
 
-                            Image(systemName: "doc.on.clipboard.fill")
+                            Image(systemName: "crop.rotate")
                                 .font(.caption2.bold())
                                 .foregroundStyle(.black)
                                 .padding(5)
@@ -148,7 +159,12 @@ struct CameraScreen: View {
                                 .offset(x: 4, y: 4)
                         }
                     }
-                    .accessibilityLabel("最後の画像をもう一度コピー")
+                    .accessibilityLabel("最後の画像の切り抜きを修正")
+                    .contextMenu {
+                        Button(action: camera.copyLastImage) {
+                            Label("もう一度コピー", systemImage: "doc.on.clipboard")
+                        }
+                    }
                 } else {
                     Color.clear.frame(width: 62, height: 62)
                 }
@@ -156,9 +172,9 @@ struct CameraScreen: View {
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 3) {
-                    Image(systemName: "doc.on.clipboard")
+                    Image(systemName: "photo.fill")
                         .font(.title3)
-                    Text("自動コピー")
+                    Text("保存＆コピー")
                         .font(.caption2.weight(.semibold))
                 }
                 .foregroundStyle(.white.opacity(0.78))
@@ -182,7 +198,7 @@ struct CameraScreen: View {
             }
             .disabled(!camera.isReady || camera.isCapturing)
             .opacity(camera.isReady ? 1 : 0.45)
-            .accessibilityLabel("撮影してクリップボードへコピー")
+            .accessibilityLabel("撮影して写真へ保存し、切り抜きを確認")
         }
         .frame(height: 90)
     }
@@ -220,7 +236,7 @@ struct CameraScreen: View {
 
     private func unavailableView(_ message: String) -> some View {
         VStack(spacing: 16) {
-            Image(systemName: "camera.fill.badge.exclamationmark")
+            Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(.orange)
             Text("カメラを開始できません")

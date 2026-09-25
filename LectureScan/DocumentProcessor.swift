@@ -5,7 +5,10 @@ import Vision
 
 struct ProcessedDocument {
     let image: UIImage
-    let rectangleFound: Bool
+    let sourceImage: UIImage
+    let quadrilateral: DetectedQuadrilateral?
+
+    var rectangleFound: Bool { quadrilateral != nil }
 }
 
 enum DocumentProcessorError: LocalizedError {
@@ -28,7 +31,10 @@ final class DocumentProcessor {
         .useSoftwareRenderer: false
     ])
 
-    func detectQuadrilateral(in image: CIImage) throws -> DetectedQuadrilateral? {
+    func detectQuadrilateral(
+        in image: CIImage,
+        maximumDimension: CGFloat? = nil
+    ) throws -> DetectedQuadrilateral? {
         let source = normalized(image)
         guard !source.extent.isEmpty else { return nil }
 
@@ -40,7 +46,11 @@ final class DocumentProcessor {
         request.maximumAspectRatio = 1.0
         request.quadratureTolerance = 35
 
-        let handler = VNImageRequestHandler(ciImage: source, orientation: .up, options: [:])
+        let detectionImage = imageForDetection(
+            source,
+            maximumDimension: maximumDimension
+        )
+        let handler = VNImageRequestHandler(ciImage: detectionImage, orientation: .up, options: [:])
         try handler.perform([request])
 
         guard let observation = request.results?.max(by: { score($0) < score($1) }) else {
@@ -51,7 +61,8 @@ final class DocumentProcessor {
             topLeft: observation.topLeft,
             topRight: observation.topRight,
             bottomLeft: observation.bottomLeft,
-            bottomRight: observation.bottomRight
+            bottomRight: observation.bottomRight,
+            sourceSize: source.extent.size
         )
     }
 
@@ -65,7 +76,7 @@ final class DocumentProcessor {
 
         let rectangle: DetectedQuadrilateral?
         if let preferredRectangle {
-            rectangle = preferredRectangle
+            rectangle = preferredRectangle.withSourceSize(source.extent.size)
         } else if detectIfNeeded {
             rectangle = try detectQuadrilateral(in: source)
         } else {
@@ -74,16 +85,11 @@ final class DocumentProcessor {
 
         let cropped = rectangle.map { perspectiveCorrect(source, to: $0) } ?? source
         let enhanced = enhance(cropped)
-        let renderBounds = enhanced.extent.integral
-
-        guard !renderBounds.isEmpty,
-              let cgImage = context.createCGImage(enhanced, from: renderBounds) else {
-            throw DocumentProcessorError.renderingFailed
-        }
 
         return ProcessedDocument(
-            image: UIImage(cgImage: cgImage, scale: 1, orientation: .up),
-            rectangleFound: rectangle != nil
+            image: try render(enhanced),
+            sourceImage: try render(source),
+            quadrilateral: rectangle
         )
     }
 
@@ -94,6 +100,20 @@ final class DocumentProcessor {
                 translationX: -image.extent.origin.x,
                 y: -image.extent.origin.y
             )
+        )
+    }
+
+    private func imageForDetection(
+        _ image: CIImage,
+        maximumDimension: CGFloat?
+    ) -> CIImage {
+        guard let maximumDimension, maximumDimension > 0 else { return image }
+        let longestDimension = max(image.extent.width, image.extent.height)
+        guard longestDimension > maximumDimension else { return image }
+
+        let scale = maximumDimension / longestDimension
+        return image.transformed(
+            by: CGAffineTransform(scaleX: scale, y: scale)
         )
     }
 
@@ -123,6 +143,15 @@ final class DocumentProcessor {
         sharpen.sharpness = 0.30
         sharpen.radius = 1.2
         return sharpen.outputImage ?? color.outputImage ?? image
+    }
+
+    private func render(_ image: CIImage) throws -> UIImage {
+        let renderBounds = image.extent.integral
+        guard !renderBounds.isEmpty,
+              let cgImage = context.createCGImage(image, from: renderBounds) else {
+            throw DocumentProcessorError.renderingFailed
+        }
+        return UIImage(cgImage: cgImage, scale: 1, orientation: .up)
     }
 
     private func imagePoint(_ normalizedPoint: CGPoint, in extent: CGRect) -> CGPoint {

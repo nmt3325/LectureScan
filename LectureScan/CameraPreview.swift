@@ -60,12 +60,14 @@ final class PreviewSurface: UIView {
         quadrilateralLayer.shadowOpacity = 0.45
         quadrilateralLayer.shadowRadius = 2
         quadrilateralLayer.shadowOffset = .zero
+        quadrilateralLayer.contentsScale = UIScreen.main.scale
         layer.addSublayer(quadrilateralLayer)
 
         focusLayer.fillColor = UIColor.clear.cgColor
         focusLayer.strokeColor = UIColor.systemYellow.cgColor
         focusLayer.lineWidth = 2
         focusLayer.opacity = 0
+        focusLayer.contentsScale = UIScreen.main.scale
         layer.addSublayer(focusLayer)
 
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(didTap(_:))))
@@ -88,8 +90,9 @@ final class PreviewSurface: UIView {
     }
 
     func update(quadrilateral: DetectedQuadrilateral?) {
+        guard self.quadrilateral != quadrilateral else { return }
         self.quadrilateral = quadrilateral
-        setNeedsLayout()
+        drawQuadrilateral()
     }
 
     func updateZoom(factor: CGFloat, range: CameraZoomRange) {
@@ -105,21 +108,41 @@ final class PreviewSurface: UIView {
     }
 
     private func drawQuadrilateral() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
         guard let quadrilateral else {
             quadrilateralLayer.path = nil
             return
         }
 
         let path = UIBezierPath()
-        path.move(to: layerPoint(from: quadrilateral.topLeft))
-        path.addLine(to: layerPoint(from: quadrilateral.topRight))
-        path.addLine(to: layerPoint(from: quadrilateral.bottomRight))
-        path.addLine(to: layerPoint(from: quadrilateral.bottomLeft))
+        path.move(to: layerPoint(from: quadrilateral.topLeft, quadrilateral: quadrilateral))
+        path.addLine(to: layerPoint(from: quadrilateral.topRight, quadrilateral: quadrilateral))
+        path.addLine(to: layerPoint(from: quadrilateral.bottomRight, quadrilateral: quadrilateral))
+        path.addLine(to: layerPoint(from: quadrilateral.bottomLeft, quadrilateral: quadrilateral))
         path.close()
         quadrilateralLayer.path = path.cgPath
     }
 
-    private func layerPoint(from visionPoint: CGPoint) -> CGPoint {
+    private func layerPoint(
+        from visionPoint: CGPoint,
+        quadrilateral: DetectedQuadrilateral
+    ) -> CGPoint {
+        if let sourceSize = quadrilateral.sourceSize,
+           sourceSize.width > 0,
+           sourceSize.height > 0 {
+            let contentRect = ImageDisplayGeometry.aspectFillRect(
+                sourceSize: sourceSize,
+                in: quadrilateralLayer.bounds
+            )
+            return ImageDisplayGeometry.viewPoint(
+                fromVisionPoint: visionPoint,
+                contentRect: contentRect
+            )
+        }
+
         let capturePoint = CGPoint(x: visionPoint.x, y: 1 - visionPoint.y)
         return previewLayer.layerPointConverted(fromCaptureDevicePoint: capturePoint)
     }

@@ -7,9 +7,9 @@
 - **無音撮影**
   - iOS 18 以降で端末・地域が対応している場合は、Apple の公開 API `isShutterSoundSuppressionEnabled` を使った高画質撮影。
   - シャッター音抑制を利用できない端末・地域では、`AVCaptureVideoDataOutput` の最新フレームを取得する方式へ自動切り替え。静止画シャッターを呼ばず、アプリ側でも撮影音を再生しません。
-- **リアルタイム矩形検知** — Vision の `VNDetectRectanglesRequest` で書類・黒板・スクリーンを検出し、黄色い枠で表示。
-- **自動切り抜き・台形補正** — Core Image の `CIPerspectiveCorrection` で撮影後に自動補正。
-- **クリップボードへ自動コピー** — 補正済み JPEG を `UIPasteboard` に保存。写真ライブラリ権限は不要。
+- **高頻度リアルタイム矩形検知** — Vision の `VNDetectRectanglesRequest` を軽量化した入力へ約 12.5 fps を上限に実行し、プレビューと同じアスペクトフィル座標で黄色い枠を表示。
+- **自動切り抜き・手動修正** — Core Image の `CIPerspectiveCorrection` で自動補正し、撮影後の画面で四隅をドラッグして切り抜き位置を修正可能。
+- **写真ライブラリ保存・自動コピー** — 補正済み JPEG を写真ライブラリへ自動保存し、同時に `UIPasteboard` へコピー。手動修正版も新しい写真として保存。
 - **授業向け操作** — タップフォーカス、通常時は `.5 / 1× / 2` のようにコンパクトな倍率プリセットを表示し、タップで切り替え。倍率表示をスライドしている間だけ目盛り付き円弧ダイヤルを展開し、円弧スライド・プレビューの2本指回転・ピンチでもズームできます（端末の対応範囲内・最大8倍）。控えめなトーチ、再コピー用サムネイルも備えます。
 - **システム表示倍率に対応** — iOS 18 以降では Apple 公開の `displayVideoZoomFactorMultiplier` を使い、複合カメラの広角端を `.5×` などシステムカメラと同じ基準で表示します。iOS 17 では倍率 1 を基準にフォールバックします。
 - **端末内処理** — 画像のアップロードや外部通信は行いません。
@@ -77,12 +77,13 @@ GitHub Actions の **Unsigned IPA** ワークフローを手動実行すると�
 - `CameraModel.swift` — AVFoundation セッション、無音方式の選択、撮影、クリップボード
 - `CameraPreview.swift` — プレビュー、矩形オーバーレイ、タップフォーカス
 - `DocumentProcessor.swift` — Vision 検知、台形補正、画質調整
-- `CameraScreen.swift` — SwiftUI UI
+- `CameraScreen.swift` — SwiftUI カメラ UI
+- `CropEditorScreen.swift` — 四隅をドラッグできる撮影後の切り抜き修正 UI
 - `LectureScanTests/` — Core Image 補正処理のテスト
 
 ## プライバシー
 
-撮影画像は端末内で処理され、補正後の JPEG のみクリップボードへ書き込まれます。写真ライブラリや外部サーバーには自動保存しません。
+撮影画像は端末内で処理され、補正後の JPEG を写真ライブラリへ保存してクリップボードにも書き込みます。写真への追加権限のみを要求し、画像の読み取りや外部サーバーへの送信は行いません。
 
 ## License
 

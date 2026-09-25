@@ -37,6 +37,9 @@ final class DocumentProcessorTests: XCTestCase {
         )
 
         XCTAssertTrue(result.rectangleFound)
+        XCTAssertEqual(result.quadrilateral?.topLeft.x ?? 0, rectangle.topLeft.x, accuracy: 0.0001)
+        XCTAssertEqual(result.sourceImage.size.width, 800, accuracy: 1)
+        XCTAssertEqual(result.sourceImage.size.height, 600, accuracy: 1)
         XCTAssertGreaterThan(result.image.size.width, 400)
         XCTAssertGreaterThan(result.image.size.height, 300)
         XCTAssertLessThan(result.image.size.width, 800)
@@ -68,5 +71,61 @@ final class DocumentProcessorTests: XCTestCase {
         )
 
         XCTAssertEqual(rectangle.approximateArea, 1, accuracy: 0.0001)
+    }
+
+    func testAspectFillMappingMatchesPortraitPreviewCrop() {
+        let bounds = CGRect(x: 0, y: 0, width: 390, height: 844)
+        let contentRect = ImageDisplayGeometry.aspectFillRect(
+            sourceSize: CGSize(width: 1_080, height: 1_920),
+            in: bounds
+        )
+
+        let center = ImageDisplayGeometry.viewPoint(
+            fromVisionPoint: CGPoint(x: 0.5, y: 0.5),
+            contentRect: contentRect
+        )
+        let topLeft = ImageDisplayGeometry.viewPoint(
+            fromVisionPoint: CGPoint(x: 0, y: 1),
+            contentRect: contentRect
+        )
+
+        XCTAssertEqual(center.x, bounds.midX, accuracy: 0.001)
+        XCTAssertEqual(center.y, bounds.midY, accuracy: 0.001)
+        XCTAssertEqual(topLeft.x, contentRect.minX, accuracy: 0.001)
+        XCTAssertEqual(topLeft.y, contentRect.minY, accuracy: 0.001)
+        XCTAssertLessThan(contentRect.minX, 0)
+        XCTAssertEqual(contentRect.height, bounds.height, accuracy: 0.001)
+    }
+
+    func testAspectFitPointConversionRoundTrips() {
+        let contentRect = ImageDisplayGeometry.aspectFitRect(
+            sourceSize: CGSize(width: 4_032, height: 3_024),
+            in: CGRect(x: 0, y: 0, width: 360, height: 620)
+        )
+        let original = CGPoint(x: 0.27, y: 0.81)
+        let viewPoint = ImageDisplayGeometry.viewPoint(
+            fromVisionPoint: original,
+            contentRect: contentRect
+        )
+        let recovered = ImageDisplayGeometry.visionPoint(
+            fromViewPoint: viewPoint,
+            contentRect: contentRect
+        )
+
+        XCTAssertEqual(recovered.x, original.x, accuracy: 0.0001)
+        XCTAssertEqual(recovered.y, original.y, accuracy: 0.0001)
+    }
+
+    func testMovingCropCornerPreservesCornerOrdering() {
+        let rectangle = DetectedQuadrilateral.fullFrame(inset: 0.1)
+        let moved = rectangle.moving(
+            .topLeft,
+            to: CGPoint(x: 0.95, y: 0.05)
+        )
+
+        XCTAssertLessThan(moved.topLeft.x, moved.topRight.x)
+        XCTAssertGreaterThan(moved.topLeft.y, moved.bottomLeft.y)
+        XCTAssertEqual(moved.topLeft.x, moved.topRight.x - 0.01, accuracy: 0.0001)
+        XCTAssertEqual(moved.topLeft.y, moved.bottomLeft.y + 0.01, accuracy: 0.0001)
     }
 }

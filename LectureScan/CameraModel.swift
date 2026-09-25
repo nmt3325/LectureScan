@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreImage
 import Foundation
+import Photos
 import UIKit
 import UniformTypeIdentifiers
 
@@ -10,9 +11,11 @@ final class CameraModel: NSObject, ObservableObject {
     @Published private(set) var authorizationState: CameraAuthorizationState = .checking
     @Published private(set) var detectedQuadrilateral: DetectedQuadrilateral?
     @Published private(set) var lastImage: UIImage?
+    @Published private(set) var editableCapture: EditableCapture?
     @Published private(set) var notice: CaptureNotice?
     @Published private(set) var isReady = false
     @Published private(set) var isCapturing = false
+    @Published private(set) var isApplyingCrop = false
     @Published private(set) var isTorchOn = false
     @Published private(set) var zoomFactor: CGFloat = 1
     @Published private(set) var zoomRange = CameraZoomRange(minimum: 1, maximum: 1)
@@ -32,6 +35,9 @@ final class CameraModel: NSObject, ObservableObject {
     private var isConfigured = false
     private var lastDetectionTime: CFTimeInterval = 0
     private var consecutiveDetectionMisses = 0
+    private var smoothedQuadrilateral: DetectedQuadrilateral?
+    private let detectionInterval: CFTimeInterval = 0.08
+    private let maximumPreviewDetectionDimension: CGFloat = 1_280
 
     func start() {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
@@ -112,6 +118,63 @@ final class CameraModel: NSObject, ObservableObject {
                     )
                 )
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
+        }
+    }
+
+    func applyManualCrop(
+        _ quadrilateral: DetectedQuadrilateral,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard let capture = editableCapture, !isApplyingCrop else {
+            completion(false)
+            return
+        }
+
+        isApplyingCrop = true
+        let selectedQuadrilateral = quadrilateral.withSourceSize(capture.sourceImage.size)
+
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            guard let source = CIImage(image: capture.sourceImage) else {
+                self.failManualCrop("元画像を読み込めませんでした。", completion: completion)
+                return
+            }
+
+            do {
+                let result = try self.processor.process(
+                    source,
+                    preferredRectangle: selectedQuadrilateral,
+                    detectIfNeeded: false
+                )
+                guard let jpegData = result.image.jpegData(compressionQuality: 0.96) else {
+                    throw DocumentProcessorError.renderingFailed
+                }
+
+                self.publish {
+                    UIPasteboard.general.setData(
+                        jpegData,
+                        forPasteboardType: UTType.jpeg.identifier
+                    )
+                    self.lastImage = result.image
+                    self.editableCapture = capture.selecting(selectedQuadrilateral)
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+
+                self.saveToPhotoLibrary(jpegData) { saveResult in
+                    self.publish {
+                        self.isApplyingCrop = false
+                        self.showDeliveryNotice(
+                            saveResult: saveResult,
+                            rectangleFound: true,
+                            isManualCorrection: true,
+                            method: nil
+                        )
+                        completion(true)
+                    }
+                }
+            } catch {
+                self.failManualCrop(error.localizedDescription, completion: completion)
             }
         }
     }
@@ -343,9 +406,8 @@ final class CameraModel: NSObject, ObservableObject {
                     throw DocumentProcessorError.renderingFailed
                 }
                 self.finish(
-                    image: result.image,
+                    result: result,
                     jpegData: jpegData,
-                    rectangleFound: result.rectangleFound,
                     method: method
                 )
             } catch {
@@ -355,25 +417,130 @@ final class CameraModel: NSObject, ObservableObject {
     }
 
     private func finish(
-        image: UIImage,
+        result: ProcessedDocument,
         jpegData: Data,
-        rectangleFound: Bool,
         method: SilentCaptureMethod
     ) {
+        let capture = EditableCapture(
+            sourceImage: result.sourceImage,
+            automaticQuadrilateral: result.quadrilateral
+        )
+
         publish {
             UIPasteboard.general.setData(jpegData, forPasteboardType: UTType.jpeg.identifier)
-            self.lastImage = image
+            self.lastImage = result.image
+            self.editableCapture = capture
             self.isCapturing = false
-            self.showNotice(
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+
+        saveToPhotoLibrary(jpegData) { [weak self] saveResult in
+            guard let self else { return }
+            self.publish {
+                self.showDeliveryNotice(
+                    saveResult: saveResult,
+                    rectangleFound: result.rectangleFound,
+                    isManualCorrection: false,
+                    method: method
+                )
+            }
+        }
+    }
+
+    private func saveToPhotoLibrary(
+        _ jpegData: Data,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let save: () -> Void = {
+            PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.originalFilename = "LectureScan-\(UUID().uuidString).jpg"
+                options.uniformTypeIdentifier = UTType.jpeg.identifier
+                request.addResource(with: .photo, data: jpegData, options: options)
+            } completionHandler: { succeeded, error in
+                if succeeded {
+                    completion(.success(()))
+                } else {
+                    completion(.failure(error ?? PhotoLibrarySaveError.saveFailed))
+                }
+            }
+        }
+
+        switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
+        case .authorized, .limited:
+            save()
+        case .notDetermined:
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+                if status == .authorized || status == .limited {
+                    save()
+                } else {
+                    completion(.failure(PhotoLibrarySaveError.accessDenied))
+                }
+            }
+        case .denied, .restricted:
+            completion(.failure(PhotoLibrarySaveError.accessDenied))
+        @unknown default:
+            completion(.failure(PhotoLibrarySaveError.saveFailed))
+        }
+    }
+
+    private func showDeliveryNotice(
+        saveResult: Result<Void, Error>,
+        rectangleFound: Bool,
+        isManualCorrection: Bool,
+        method: SilentCaptureMethod?
+    ) {
+        switch saveResult {
+        case .success:
+            let title: String
+            if isManualCorrection {
+                title = "切り抜きを修正して保存しました"
+            } else if rectangleFound {
+                title = "矩形補正して保存しました"
+            } else {
+                title = "画像を保存しました"
+            }
+
+            let fallbackDetail = method.map {
+                "写真ライブラリへ保存・コピー（\($0.shortLabel)）"
+            } ?? "写真ライブラリへ保存し、クリップボードへコピー"
+            showNotice(
                 CaptureNotice(
                     kind: .success,
-                    title: rectangleFound ? "矩形補正してコピーしました" : "画像をコピーしました",
+                    title: title,
                     detail: rectangleFound
-                        ? "傾きを補正した JPEG をクリップボードへ保存"
-                        : "矩形が見つからなかったため全体をコピー（\(method.shortLabel)）"
+                        ? "写真ライブラリへ保存し、クリップボードへコピー"
+                        : fallbackDetail
                 )
             )
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case .failure(let error):
+            showNotice(
+                CaptureNotice(
+                    kind: .error,
+                    title: "写真への保存に失敗しました",
+                    detail: "画像はコピー済みです。\(error.localizedDescription)"
+                )
+            )
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+    }
+
+    private func failManualCrop(
+        _ message: String,
+        completion: @escaping (Bool) -> Void
+    ) {
+        publish {
+            self.isApplyingCrop = false
+            self.showNotice(
+                CaptureNotice(
+                    kind: .error,
+                    title: "切り抜きを修正できませんでした",
+                    detail: message
+                )
+            )
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            completion(false)
         }
     }
 
@@ -413,6 +580,13 @@ final class CameraModel: NSObject, ObservableObject {
         }
     }
 
+    private func registerDetectionMiss() {
+        consecutiveDetectionMisses += 1
+        guard consecutiveDetectionMisses >= 4 else { return }
+        smoothedQuadrilateral = nil
+        publish { self.detectedQuadrilateral = nil }
+    }
+
     private func publish(_ update: @escaping () -> Void) {
         if Thread.isMainThread {
             update()
@@ -435,22 +609,27 @@ extension CameraModel: AVCaptureVideoDataOutputSampleBufferDelegate {
         frameLock.unlock()
 
         let now = CACurrentMediaTime()
-        guard now - lastDetectionTime >= 0.24 else { return }
+        guard now - lastDetectionTime >= detectionInterval else { return }
         lastDetectionTime = now
 
         do {
-            let quadrilateral = try processor.detectQuadrilateral(in: CIImage(cvPixelBuffer: pixelBuffer))
-            if let quadrilateral {
+            let detected = try processor.detectQuadrilateral(
+                in: CIImage(cvPixelBuffer: pixelBuffer),
+                maximumDimension: maximumPreviewDetectionDimension
+            )
+            if let detected {
                 consecutiveDetectionMisses = 0
-                publish { self.detectedQuadrilateral = quadrilateral }
+                let stabilized = smoothedQuadrilateral?.interpolated(
+                    toward: detected,
+                    amount: 0.58
+                ) ?? detected
+                smoothedQuadrilateral = stabilized
+                publish { self.detectedQuadrilateral = stabilized }
             } else {
-                consecutiveDetectionMisses += 1
-                if consecutiveDetectionMisses >= 3 {
-                    publish { self.detectedQuadrilateral = nil }
-                }
+                registerDetectionMiss()
             }
         } catch {
-            consecutiveDetectionMisses += 1
+            registerDetectionMiss()
         }
     }
 }
@@ -476,6 +655,20 @@ extension CameraModel: AVCapturePhotoCaptureDelegate {
         }
 
         process(image, method: .publicPhotoSuppression)
+    }
+}
+
+private enum PhotoLibrarySaveError: LocalizedError {
+    case accessDenied
+    case saveFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .accessDenied:
+            return "設定で写真への追加を許可してください。"
+        case .saveFailed:
+            return "写真ライブラリへ書き込めませんでした。"
+        }
     }
 }
 

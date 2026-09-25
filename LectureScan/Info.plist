@@ -24,6 +24,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>授業中の書類・黒板・スクリーンを撮影し、自動で矩形補正するためにカメラを使用します。</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>撮影して矩形補正した画像を写真ライブラリへ保存するために使用します。</string>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
