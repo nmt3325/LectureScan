@@ -1,0 +1,94 @@
+name: Unsigned IPA
+
+# macOS hosted runners consume billable minutes for private repositories.
+# Run this workflow manually after enabling an Actions spending limit.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-unsigned-ipa:
+    name: Build unsigned device IPA
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      APP_NAME: LectureScan
+      DERIVED_DATA: ${{ github.workspace }}/build/DerivedData
+      ARTIFACT_DIR: ${{ github.workspace }}/build/artifacts
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if [[ -d /Applications/Xcode_26.6.app ]]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          else
+            echo "::notice::Xcode 26.6 is unavailable; using the runner default."
+          fi
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Build unsigned app for iPhoneOS
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project LectureScan.xcodeproj \
+            -scheme LectureScan \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED_DATA" \
+            clean build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Package and verify unsigned IPA
+        run: |
+          set -euo pipefail
+
+          app_path="$DERIVED_DATA/Build/Products/Release-iphoneos/$APP_NAME.app"
+          ipa_path="$ARTIFACT_DIR/$APP_NAME-unsigned.ipa"
+
+          test -d "$app_path"
+          rm -rf "$ARTIFACT_DIR"
+          mkdir -p "$ARTIFACT_DIR/Payload"
+          ditto "$app_path" "$ARTIFACT_DIR/Payload/$APP_NAME.app"
+
+          # An unsigned package must not contain a provisioning profile or signature directory.
+          rm -rf "$ARTIFACT_DIR/Payload/$APP_NAME.app/_CodeSignature"
+          rm -f "$ARTIFACT_DIR/Payload/$APP_NAME.app/embedded.mobileprovision"
+
+          if codesign -dv "$ARTIFACT_DIR/Payload/$APP_NAME.app" 2>/dev/null; then
+            echo "::error::The packaged application is unexpectedly code signed."
+            exit 1
+          fi
+
+          (
+            cd "$ARTIFACT_DIR"
+            /usr/bin/zip -qry "$ipa_path" Payload
+            /usr/bin/shasum -a 256 "$APP_NAME-unsigned.ipa" > "$APP_NAME-unsigned.ipa.sha256"
+          )
+
+          /usr/bin/unzip -t "$ipa_path"
+          /usr/bin/du -h "$ipa_path"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: LectureScan-unsigned-${{ github.sha }}
+          path: |
+            build/artifacts/LectureScan-unsigned.ipa
+            build/artifacts/LectureScan-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

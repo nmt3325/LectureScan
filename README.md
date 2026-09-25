@@ -53,6 +53,24 @@ xcodebuild \
 
 > iOS Simulator にはカメラがないため、カメラ入力・撮影音・トーチは実機で確認してください。画像補正ロジックのユニットテストは Simulator で実行できます。
 
+## 未署名 IPA の CI
+
+GitHub Actions の **Unsigned IPA** ワークフローを手動実行すると、実機向け Release ビルドを署名なしで作成し、次のファイルを Artifact として 14 日間保存します。
+
+- `LectureScan-unsigned.ipa`
+- `LectureScan-unsigned.ipa.sha256`
+
+実行手順:
+
+1. リポジトリの **Actions** を開く
+2. **Unsigned IPA** を選択する
+3. **Run workflow** を実行する
+4. 完了した run の **Artifacts** から `LectureScan-unsigned-<commit SHA>` をダウンロードする
+
+ワークフローは `macos-15` で Xcode 26.6（利用できない場合は runner の既定 Xcode）を選択し、`iphoneos` 向けにビルドし、署名・プロビジョニングプロファイルが含まれていないことを確認してから IPA を生成します。署名証明書や秘密情報を GitHub に登録する必要はありません。
+
+> 未署名 IPA はそのまま通常の iPhone へインストールできません。使用する端末と Apple ID に対応した証明書・プロビジョニングプロファイルで、利用者自身が再署名してください。また、PRIVATE リポジトリの macOS runner は課金対象のため、GitHub Actions の spending limit を有効にしてから実行してください。
+
 ## 構成
 
 - `CameraModel.swift` — AVFoundation セッション、無音方式の選択、撮影、クリップボード
