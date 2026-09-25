@@ -1,9 +1,9 @@
 name: Build
 
+# macOS hosted runners consume billable minutes for private repositories.
+# Run this workflow manually after enabling an Actions spending limit.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
